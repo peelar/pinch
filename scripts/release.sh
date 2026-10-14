@@ -17,7 +17,7 @@ if [ -n "${SIGNING_IDENTITY:-}" ]; then
   rm dist/notarize.zip
   spctl --assess --type execute "$APP"
 else
-  echo 'Packaging a local, ad hoc signed build; public releases need Developer ID signing and notarization.' >&2
+  echo 'Packaging an ad hoc signed build without Apple notarization; macOS may require approval.' >&2
 fi
 codesign --verify --deep --strict "$APP"
 ASSET="pinch-macos-$ARCH.zip"

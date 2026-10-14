@@ -9,6 +9,8 @@ concurrency:
 jobs:
   release:
     runs-on: macos-14
+    env:
+      SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -27,6 +29,7 @@ jobs:
       - run: scripts/bundle.sh
       - run: codesign --verify --deep --strict dist/Pinch.app
       - name: Import signing credentials
+        if: env.SIGNING_IDENTITY != ''
         env:
           CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -44,13 +47,12 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/pinch.keychain-db"
           security list-keychains -d user -s "$RUNNER_TEMP/pinch.keychain-db" login.keychain-db
           xcrun notarytool store-credentials pinch-release --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID"
-      - name: Package signed Apple Silicon app
+      - name: Package Apple Silicon app
         env:
           SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
           NOTARY_PROFILE: pinch-release
           PINCH_REPOSITORY: ${{ github.repository }}
         run: |
-          test -n "$SIGNING_IDENTITY"
           scripts/release.sh
       - name: Create draft release
         env:
@@ -58,7 +60,7 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" --verify-tag --draft --generate-notes --title "Pinch $GITHUB_REF_NAME" dist/pinch-macos-arm64.zip dist/pinch-macos-arm64.zip.sha256 dist/install.sh LICENSE
       - name: Clean signing credentials
-        if: always()
+        if: always() && env.SIGNING_IDENTITY != ''
         run: |
           security delete-keychain "$RUNNER_TEMP/pinch.keychain-db" || true
           rm -f "$RUNNER_TEMP/certificate.p12"

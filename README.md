@@ -20,11 +20,10 @@ a long time and nothing is connected to it, you get a notification with
 ## Install
 
 Prebuilt releases use a direct installer; Homebrew and Rust are not required.
-Once this repository has a published release, replace `OWNER/REPO` below with
-its GitHub repository:
+Install the latest published release:
 
 ```bash
-curl -fsSL https://github.com/OWNER/REPO/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/peelar/pinch/releases/latest/download/install.sh | bash
 pinch setup
 pinch ps
 ```
@@ -39,7 +38,7 @@ running. Agent skill updates remain explicit: run `pinch setup` after upgrading.
 Pass `--no-modify-path` to manage PATH yourself, or `--version v0.1.0` to choose
 a release, using `bash -s -- --version v0.1.0` in the command above.
 
-No public release is configured yet. To install a local build:
+To install a local build:
 
 ```bash
 scripts/bundle.sh
@@ -55,15 +54,18 @@ agent skills remain in each agent's skills directory.
 `scripts/release.sh` packages `dist/Pinch.app` into an architecture-specific ZIP,
 its SHA-256 checksum, and an installer. Set `PINCH_REPOSITORY=owner/repo` to bake
 the download location into the installer. Local packages use the existing ad hoc
-signature; the download installer requires a Developer ID signed, notarized app.
+signature; Apple signing credentials are optional. The installer checks the
+checksum and bundle signature and accepts ad hoc signed releases.
 
-For public releases, provide `SIGNING_IDENTITY` and `NOTARY_PROFILE` (a
+To sign and notarize releases, optionally provide `SIGNING_IDENTITY` and `NOTARY_PROFILE` (a
 `notarytool` keychain profile) when running `scripts/release.sh`. It signs each
 binary with hardened runtime, signs the bundle, notarizes it, staples the ticket,
 and packages the result.
 
 The tag-triggered GitHub workflow builds an Apple Silicon release and creates a
-**draft** GitHub release. Configure these repository secrets first:
+**draft** GitHub release. Without signing credentials it distributes an ad hoc
+signed build. To enable Developer ID signing and notarization later, configure
+these repository secrets:
 
 - `MACOS_CERTIFICATE_BASE64`: base64-encoded Developer ID Application `.p12`.
 - `MACOS_CERTIFICATE_PASSWORD`: password for that certificate export.
@@ -73,8 +75,7 @@ The tag-triggered GitHub workflow builds an Apple Silicon release and creates a
 Record changes with `pnpm changeset`, then run `pnpm version` to update the
 package and Rust workspace versions together. Check them with
 `pnpm check:version`, commit the version changes, and push the matching `vX.Y.Z` tag,
-then review and publish the draft release. Signing credentials are required;
-the workflow does not publish unsigned downloads. Intel builds and an installer
+then review and publish the draft release. Intel builds and an installer
 on a custom domain can be added later.
 
 ## Build from source
@@ -124,8 +125,12 @@ Before committing, run `cargo fmt --all -- --check`,
 Pinch is early-stage software for macOS 13 or later. Building from source needs
 Rust and Xcode Command Line Tools (`xcode-select --install`). Linux and Windows
 are not supported. Release automation currently builds for Apple Silicon.
-Local app bundles are ad-hoc signed. GitHub release builds require Developer ID
-signing and notarization credentials; see the release guide.
+Releases are currently ad hoc signed, without an Apple developer identity or
+notarization. If macOS blocks Pinch, try opening `~/Applications/Pinch.app`, then
+use **System Settings → Privacy & Security → Open Anyway** if offered. See
+[Apple's approval instructions](https://support.apple.com/102445).
+The installer does not remove quarantine or disable Gatekeeper.
+Developer ID signing can be enabled later; see the release guide.
 
 ## Issues and releases
 

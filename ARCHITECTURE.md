@@ -129,7 +129,8 @@ Built, and exercised end to end (CLI + engine, with real servers):
   `~/Applications`, a CLI symlink, optional zsh/bash PATH setup, and rerun-to-update.
 - `scripts/release.sh` supports Developer ID signing and notarization. Tagged
   GitHub builds create draft Apple Silicon releases; public distribution still
-  needs a GitHub repository and Apple signing credentials. Auto-update remains
+  uses `peelar/pinch`; Apple signing credentials are optional. Releases default
+  to ad hoc signed builds, with macOS approval left to users. Auto-update remains
   out of scope.
 
 Deliberate simplifications versus the plan above:

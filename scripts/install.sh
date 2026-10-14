@@ -39,14 +39,15 @@ else
   curl --fail --location --silent --show-error "$BASE/$ASSET.sha256" -o "$WORK/$ASSET.sha256"
   (cd "$WORK" && shasum -a 256 -c "$ASSET.sha256")
   ditto -x -k "$WORK/$ASSET" "$WORK"
-  # Verify the downloaded app without removing quarantine or bypassing Gatekeeper.
+  # Ad hoc signatures check bundle integrity, without asserting a developer identity.
   codesign --verify --deep --strict "$WORK/Pinch.app"
-  spctl --assess --type execute "$WORK/Pinch.app"
+  if ! spctl --assess --type execute "$WORK/Pinch.app" >/dev/null 2>&1; then
+    echo "This release is not notarized by Apple. macOS may ask you to approve Pinch."
+  fi
 fi
 for binary in pinch pinchd pinch-ui; do
   [ -x "$WORK/Pinch.app/Contents/MacOS/$binary" ] || fail "bundle is missing $binary"
 done
-"$WORK/Pinch.app/Contents/MacOS/pinch" --version
 # Stop the old engine so the next CLI invocation uses the updated binaries.
 # The quit command leaves managed servers running.
 if [ -x "$APP_DIR/Pinch.app/Contents/MacOS/pinch" ]; then
@@ -74,4 +75,8 @@ case ":$PATH:" in
     fi;;
 esac
 echo "Installed $APP_DIR/Pinch.app"
+if ! "$APP_DIR/Pinch.app/Contents/MacOS/pinch" --version; then
+  echo 'macOS could not launch Pinch. Open Pinch.app, then approve it in System Settings > Privacy & Security > Open Anyway if prompted.'
+  echo 'See https://support.apple.com/102445 for macOS approval instructions.'
+fi
 echo 'Next: pinch setup, then pinch ps. Rerun this installer to update.'
