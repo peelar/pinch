@@ -1,0 +1,248 @@
+//! Types shared by the engine and its clients (CLI, UI), and the RPC messages
+//! they exchange over the engine's Unix socket as newline-delimited JSON.
+//! One request per connection: the client writes a line, the engine answers
+//! with a line and closes.
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+/// Bumped on any breaking change to [`Request`] or [`Response`]; clients and
+/// the engine refuse to talk across versions.
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// Stable id of a managed process, assigned by the engine.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ProcessId(pub String);
+
+/// What launched the process, inferred from its command line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessKind {
+    Pnpm,
+    Npm,
+    Yarn,
+    Bun,
+    Node,
+    Python,
+    Cargo,
+    Other(String),
+}
+
+impl ProcessKind {
+    /// Infer the kind from an executable name (`pnpm`, `/usr/bin/python3`, …).
+    pub fn from_exe(exe: &str) -> Self {
+        let base = exe.rsplit('/').next().unwrap_or(exe);
+        match base {
+            "pnpm" | "pnpx" => Self::Pnpm,
+            "npm" | "npx" => Self::Npm,
+            "yarn" => Self::Yarn,
+            "bun" | "bunx" => Self::Bun,
+            "node" | "deno" => Self::Node,
+            "cargo" => Self::Cargo,
+            b if b.starts_with("python") || b == "uv" || b == "uvicorn" => Self::Python,
+            other => Self::Other(other.to_string()),
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Pnpm => "pnpm",
+            Self::Npm => "npm",
+            Self::Yarn => "yarn",
+            Self::Bun => "bun",
+            Self::Node => "node",
+            Self::Python => "python",
+            Self::Cargo => "cargo",
+            Self::Other(name) => name,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "state")]
+pub enum Status {
+    Running,
+    /// Several staleness signals agree; a decision is pending.
+    Stale,
+    Exited {
+        code: Option<i32>,
+    },
+}
+
+impl Status {
+    pub fn is_alive(&self) -> bool {
+        !matches!(self, Self::Exited { .. })
+    }
+}
+
+/// Who started the process; managed ones have logs, unmanaged ones were
+/// discovered listening on a port.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Origin {
+    Managed,
+    Unmanaged,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessInfo {
+    pub id: ProcessId,
+    pub name: String,
+    pub kind: ProcessKind,
+    pub origin: Origin,
+    pub status: Status,
+    pub command: Vec<String>,
+    pub cwd: String,
+    #[serde(default)]
+    pub executable: Option<String>,
+    /// App bundle containing the executable or a command-line path.
+    #[serde(default)]
+    pub app_bundle: Option<String>,
+    /// Repository root the process belongs to; the scope of `ensure`.
+    pub repo: Option<String>,
+    pub branch: Option<String>,
+    pub owner: Option<String>,
+    pub pid: Option<u32>,
+    pub ports: Vec<u16>,
+    pub started_at_ms: u64,
+    /// Last time the process wrote to its log (managed processes only).
+    pub last_output_ms: Option<u64>,
+    pub log_path: Option<String>,
+    pub metrics: Option<Metrics>,
+}
+
+/// Summed over the whole process tree (e.g. pnpm → node).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Metrics {
+    pub cpu_percent: f32,
+    pub rss_bytes: u64,
+}
+
+/// Something the engine wants a human to confirm, shown as a notification,
+/// in the UI's inbox, and in `pinch inbox`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Decision {
+    pub id: String,
+    pub process: ProcessId,
+    pub process_name: String,
+    pub reason: String,
+    pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionAnswer {
+    Kill,
+    /// Keep running and don't ask about this process again.
+    Keep,
+    /// Ask again in an hour.
+    Snooze,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Spawn {
+    pub name: String,
+    pub command: Vec<String>,
+    pub cwd: String,
+    pub owner: Option<String>,
+    /// The caller's environment: the engine runs under launchd or a bare
+    /// shell, so it can't rely on its own PATH.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum Request {
+    Hello {
+        version: u32,
+    },
+    /// Start unless an equivalent process is already running in this repo.
+    Ensure(Spawn),
+    Run(Spawn),
+    /// Processes and pending decisions in one round trip.
+    Snapshot,
+    /// Stop by name, id, or port number.
+    Stop {
+        name: String,
+    },
+    Restart {
+        name: String,
+    },
+    Logs {
+        name: String,
+        tail: Option<usize>,
+    },
+    Answer {
+        decision: String,
+        answer: DecisionAnswer,
+    },
+    /// Quit the engine. Managed processes keep running.
+    Shutdown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum Response {
+    Hello {
+        version: u32,
+    },
+    Ensured {
+        process: ProcessInfo,
+        already_running: bool,
+    },
+    Process {
+        process: ProcessInfo,
+    },
+    Snapshot {
+        processes: Vec<ProcessInfo>,
+        decisions: Vec<Decision>,
+    },
+    Logs {
+        text: String,
+    },
+    Ok,
+    Error {
+        message: String,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn messages_round_trip_as_tagged_json() {
+        let request = Request::Ensure(Spawn {
+            name: "web".into(),
+            command: vec!["pnpm".into(), "dev".into()],
+            cwd: "/tmp".into(),
+            owner: None,
+            env: BTreeMap::new(),
+        });
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.starts_with(r#"{"type":"ensure""#));
+        serde_json::from_str::<Request>(&json).unwrap();
+
+        let response = Response::Logs {
+            text: "ready".into(),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert_eq!(json, r#"{"type":"logs","text":"ready"}"#);
+        serde_json::from_str::<Response>(&json).unwrap();
+    }
+
+    #[test]
+    fn kind_from_exe() {
+        assert_eq!(
+            ProcessKind::from_exe("/opt/homebrew/bin/pnpm"),
+            ProcessKind::Pnpm
+        );
+        assert_eq!(ProcessKind::from_exe("python3.12"), ProcessKind::Python);
+        assert_eq!(
+            ProcessKind::from_exe("vite"),
+            ProcessKind::Other("vite".into())
+        );
+    }
+}

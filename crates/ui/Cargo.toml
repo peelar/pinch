@@ -1,0 +1,15 @@
+[package]
+name = "pinch-ui"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "pinch-ui"
+path = "src/main.rs"
+
+[dependencies]
+pinch-proto.workspace = true
+pinch-client.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true

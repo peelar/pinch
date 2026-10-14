@@ -1,0 +1,17 @@
+[package]
+name = "pinch-cli"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "pinch"
+path = "src/main.rs"
+
+[dependencies]
+pinch-proto.workspace = true
+pinch-client.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true

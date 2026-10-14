@@ -1,0 +1,13 @@
+name: Feature request
+description: Suggest an improvement. Requests do not imply a commitment to implement them.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Suggested behavior

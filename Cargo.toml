@@ -1,0 +1,48 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/proto",
+    "crates/client",
+    "crates/engine",
+    "crates/macos",
+    "crates/cli",
+    "crates/ui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+pinch-proto = { path = "crates/proto" }
+pinch-client = { path = "crates/client" }
+pinch-macos = { path = "crates/macos" }
+
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+libc = "0.2"
+sysinfo = "0.39"
+
+# Same GPUI fork + rev as Zeron (github.com/zeronsh/zeron), so its UI
+# components port over unchanged. `runtime_shaders` compiles Metal shaders at
+# runtime, which avoids needing full Xcode for the `metal` compiler.
+gpui = { git = "https://github.com/zeronsh/zui", rev = "361ff20b919fdfb80199ee6d9aed725300cb7d54" }
+gpui_platform = { git = "https://github.com/zeronsh/zui", rev = "361ff20b919fdfb80199ee6d9aed725300cb7d54", features = [
+    "font-kit",
+    "runtime_shaders",
+] }
+
+[profile.dev]
+opt-level = 0
+
+# GPUI is slow unoptimized; optimize dependencies even in dev builds.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+strip = "symbols"

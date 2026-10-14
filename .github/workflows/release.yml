@@ -1,0 +1,37 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.ref }}
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check:version
+      - name: Check release tag
+        run: test "$GITHUB_REF_NAME" = "v$(node -p 'require("./package.json").version')"
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --workspace -- -D warnings
+      - run: cargo test --locked --workspace
+      - run: scripts/bundle.sh
+      - run: codesign --verify --deep --strict dist/Pinch.app
+      - name: Package Apple Silicon app
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent dist/Pinch.app dist/Pinch-macos-arm64.zip
+          shasum -a 256 dist/Pinch-macos-arm64.zip > dist/Pinch-macos-arm64.zip.sha256
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --verify-tag --draft --generate-notes --title "Pinch $GITHUB_REF_NAME" dist/Pinch-macos-arm64.zip dist/Pinch-macos-arm64.zip.sha256

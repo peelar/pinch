@@ -1,0 +1,24 @@
+name: Bug report
+description: Report something that is broken.
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Pinch version
+      description: Run pinch --version.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: macOS version and chip
+      placeholder: macOS 15, Apple M3
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: What happened?
+      description: Include steps to reproduce, expected behavior, and actual behavior. Remove credentials, private paths, and sensitive logs.
+    validations:
+      required: true
