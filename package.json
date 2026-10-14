@@ -2,6 +2,7 @@
   "name": "pinch",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Release tooling for the Pinch macOS app",
   "packageManager": "pnpm@11.25.0",
   "scripts": {

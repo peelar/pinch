@@ -22,14 +22,15 @@ git pull --ff-only
 pnpm install --frozen-lockfile
 pnpm check:version
 git tag "v$(node -p 'require("./package.json").version')"
-git push origin --tags
+git push origin "v$(node -p 'require("./package.json").version')"
 ```
 
 The Release workflow builds an Apple Silicon app and creates a draft GitHub
 release with a zip and SHA-256 checksum. Review its notes and test the downloaded
-app before publishing. The app is ad-hoc signed, not Developer ID signed or
-notarized; macOS may block downloaded builds. Notarized distribution remains
-future work. Intel builds are not currently distributed.
+app before publishing. The workflow requires Developer ID signing and notarization secrets:
+`MACOS_CERTIFICATE_BASE64`, `MACOS_CERTIFICATE_PASSWORD`,
+`MACOS_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_APP_PASSWORD`, and `APPLE_TEAM_ID`.
+Local bundles remain ad-hoc signed. Intel builds are not currently distributed.
 
 For the initial release, tag the current 0.1.0 after CI passes. Subsequent
 versions come from changesets.

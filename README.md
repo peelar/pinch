@@ -124,8 +124,8 @@ Before committing, run `cargo fmt --all -- --check`,
 Pinch is early-stage software for macOS 13 or later. Building from source needs
 Rust and Xcode Command Line Tools (`xcode-select --install`). Linux and Windows
 are not supported. Release automation currently builds for Apple Silicon.
-App bundles are ad-hoc signed; Developer ID signing and notarization are not yet
-set up.
+Local app bundles are ad-hoc signed. GitHub release builds require Developer ID
+signing and notarization credentials; see the release guide.
 
 ## Issues and releases
 
@@ -135,3 +135,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Versions and changelogs use Changesets. See the
 [release guide](.changeset/README.md) for the version PR and draft release flow.
+
+## License
+
+[MIT](LICENSE). Third-party dependencies retain their own licenses.

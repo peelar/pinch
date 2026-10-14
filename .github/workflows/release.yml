@@ -26,12 +26,39 @@ jobs:
       - run: cargo test --locked --workspace
       - run: scripts/bundle.sh
       - run: codesign --verify --deep --strict dist/Pinch.app
-      - name: Package Apple Silicon app
+      - name: Import signing credentials
+        env:
+          CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          ditto -c -k --sequesterRsrc --keepParent dist/Pinch.app dist/Pinch-macos-arm64.zip
-          shasum -a 256 dist/Pinch-macos-arm64.zip > dist/Pinch-macos-arm64.zip.sha256
+          test -n "$CERTIFICATE"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 24)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/pinch.keychain-db"
+          security set-keychain-settings -lut 21600 "$RUNNER_TEMP/pinch.keychain-db"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/pinch.keychain-db"
+          printf '%s' "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$RUNNER_TEMP/pinch.keychain-db" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/pinch.keychain-db"
+          security list-keychains -d user -s "$RUNNER_TEMP/pinch.keychain-db" login.keychain-db
+          xcrun notarytool store-credentials pinch-release --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID"
+      - name: Package signed Apple Silicon app
+        env:
+          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          NOTARY_PROFILE: pinch-release
+          PINCH_REPOSITORY: ${{ github.repository }}
+        run: |
+          test -n "$SIGNING_IDENTITY"
+          scripts/release.sh
       - name: Create draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --verify-tag --draft --generate-notes --title "Pinch $GITHUB_REF_NAME" dist/Pinch-macos-arm64.zip dist/Pinch-macos-arm64.zip.sha256
+          gh release create "$GITHUB_REF_NAME" --verify-tag --draft --generate-notes --title "Pinch $GITHUB_REF_NAME" dist/pinch-macos-arm64.zip dist/pinch-macos-arm64.zip.sha256 dist/install.sh LICENSE
+      - name: Clean signing credentials
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/pinch.keychain-db" || true
+          rm -f "$RUNNER_TEMP/certificate.p12"
