@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped on any breaking change to [`Request`] or [`Response`]; clients and
 /// the engine refuse to talk across versions.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Stable id of a managed process, assigned by the engine.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -180,6 +180,10 @@ pub enum Request {
     /// Stop by name, id, or port number.
     Stop {
         name: String,
+    },
+    /// Explicitly confirmed termination of one discovered PID, never its group.
+    StopDiscovered {
+        process: Box<ProcessInfo>,
     },
     /// Remove a stopped managed process from the registry.
     Clear {

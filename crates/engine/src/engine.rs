@@ -222,6 +222,53 @@ impl Engine {
         bail!("no process matching '{target}'")
     }
 
+    pub fn stop_discovered(&self, confirmed: &ProcessInfo) -> Result<ProcessInfo> {
+        let inner = self.lock();
+        let info = inner
+            .unmanaged
+            .iter()
+            .find(|p| p.id == confirmed.id)
+            .ok_or_else(|| anyhow!("discovered process is no longer available; review it again"))?
+            .clone();
+        let pid = info.pid.ok_or_else(|| anyhow!("process has no PID"))?;
+        if pid <= 1 || pid == std::process::id() || confirmed.origin != Origin::Unmanaged {
+            bail!("refusing to terminate a protected process");
+        }
+        let mut fresh = System::new();
+        fresh.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+            true,
+            refresh_kind(),
+        );
+        let process = fresh
+            .process(Pid::from_u32(pid))
+            .ok_or_else(|| anyhow!("process has already exited"))?;
+        let command: Vec<String> = process
+            .cmd()
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        let executable = process.exe().map(|p| p.to_string_lossy().into_owned());
+        let cwd = process
+            .cwd()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if info.id.0 != format!("pid:{pid}:{}", process.start_time())
+            || confirmed.pid != Some(pid)
+            || confirmed.command != command
+            || confirmed.executable != executable
+            || confirmed.cwd != cwd
+            || confirmed.started_at_ms != process.start_time() * 1000
+        {
+            bail!("process identity changed; review it again before stopping");
+        }
+        // Discovered listeners can share a session with unrelated applications.
+        if unsafe { libc::kill(pid as i32, libc::SIGTERM) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(info)
+    }
+
     pub fn clear(&self, target: &str) -> Result<()> {
         let mut inner = self.lock();
         let idx = find_managed(&inner, target)
@@ -947,7 +994,51 @@ mod identity_tests {
                     .contains("read-only")
             );
         }
+        let confirmed = engine.snapshot().0[0].clone();
+        assert!(engine.stop_discovered(&confirmed).is_err());
+        let mut wrong_id = confirmed;
+        wrong_id.id = ProcessId("node:3000".into());
+        assert!(engine.stop_discovered(&wrong_id).is_err());
         assert_eq!(engine.snapshot().0.len(), 1);
+
+        let mut child = Command::new("sleep").arg("60").spawn().unwrap();
+        let pid = child.id();
+        let mut sys = System::new();
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+            true,
+            refresh_kind(),
+        );
+        let live = sys.process(Pid::from_u32(pid)).unwrap();
+        let mut reviewed = engine.snapshot().0[0].clone();
+        reviewed.id = ProcessId(format!("pid:{pid}:{}", live.start_time()));
+        reviewed.pid = Some(pid);
+        reviewed.started_at_ms = live.start_time() * 1000;
+        reviewed.command = live
+            .cmd()
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        reviewed.executable = live.exe().map(|p| p.to_string_lossy().into_owned());
+        reviewed.cwd = live
+            .cwd()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        engine.lock().unmanaged = vec![reviewed.clone()];
+        let mut changed = reviewed.clone();
+        changed.command.push("changed".into());
+        assert!(engine.stop_discovered(&changed).is_err());
+        assert!(child.try_wait().unwrap().is_none());
+        engine.stop_discovered(&reviewed).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() > deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("confirmed process did not terminate");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[test]

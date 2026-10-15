@@ -62,7 +62,7 @@ Pinch.app (signed bundle, one install)
   SIGTERM then SIGKILL after a timeout, to the whole process group.
 - Port detection by walking the process tree; kind detection from argv.
 - Metrics sampled every 2 s, last ~10 min kept in memory for sparklines.
-- Discovery of unmanaged listening ports (read-only inspection).
+- Discovery of unmanaged listening ports with explicit, protected termination.
 - Health: crashed/exited processes keep exit code and last log lines. One
   staleness rule, done well: silent for N min, no connections to the port, and
   running for at least M min.
@@ -169,9 +169,12 @@ worktree, ended agent session), sparklines.
 ### Process provenance and identification
 
 Registered processes and discovered listeners are separate sections in both the
-popover and CLI. Stopped registered processes show a visible × button to clear their registry
-entry. Only registered processes have Stop actions; the engine rejects
-Stop requests for discovered listeners. Runtime names and listening ports do not
+popover and CLI. Stopped registered processes have a visible × button to clear
+their registry entry. Registered processes retain direct Stop actions. Discovered listeners require a
+separate confirmation showing PID, command, executable, cwd, and detected app.
+The dedicated RPC rechecks PID/start time and the reviewed identity against the
+live process before sending SIGTERM to that PID alone, with no group signal or
+SIGKILL escalation. Ordinary Stop requests still reject discovered targets. Runtime names and listening ports do not
 prove that a process is a dev server. Discovery remains a runtime-name heuristic.
 Discovered records include the executable path, command, cwd, PID, and any app
 bundle found in executable/command paths. When no direct app bundle exists,
@@ -182,5 +185,5 @@ Parent lookup is bounded to 64 hops; reparented processes may have no launcher.
 Runtime icons (Node, Python, npm, pnpm, Yarn, Bun, Cargo) are embedded SVGs
 ported from Zeron’s MIT-licensed file icons, retaining their license. App bundle names are path-derived,
 not verified bundle metadata; processes outside bundles can remain unidentified.
-Discovered IDs include start time as well as PID. Protocol version 2 requires
+Discovered IDs include start time as well as PID. Protocol version 4 requires
 updating the engine and clients together.
