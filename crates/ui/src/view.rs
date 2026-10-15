@@ -109,7 +109,7 @@ pub fn height_for(snapshot: &Snapshot) -> f32 {
         .iter()
         .filter(|p| p.origin == Origin::Unmanaged)
         .count() as f32;
-    let mut h = 52.0 + 40.0; // header + footer
+    let mut h = 52.0 + 40.0 + 12.0; // header + footer + list margin
     if snapshot.onboarding {
         h += 150.0;
     }
@@ -653,7 +653,7 @@ impl Popover {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .pb_2();
+            .mb_3();
         if let Some(process) = &self.confirm_stop {
             let confirmed = process.clone();
             let mut card = div().mx_2().p_3().flex().flex_col().gap_2()
