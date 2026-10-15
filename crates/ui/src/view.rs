@@ -144,6 +144,7 @@ pub struct Popover {
     focus: FocusHandle,
     log_scroll: ScrollHandle,
     seen_active: bool,
+    confirm_stop: Option<ProcessInfo>,
 }
 
 impl Popover {
@@ -198,6 +199,7 @@ impl Popover {
             focus,
             log_scroll: ScrollHandle::new(),
             seen_active: false,
+            confirm_stop: None,
         }
     }
 
@@ -233,12 +235,16 @@ impl Popover {
     /// Send a request in the background, then refresh straight away.
     fn send(&mut self, req: Request, window: &mut Window, cx: &mut Context<Self>) {
         cx.spawn_in(window, async move |this, cx| {
-            cx.background_executor()
-                .spawn(async move {
-                    let _ = request(&req);
-                })
+            let result = cx
+                .background_executor()
+                .spawn(async move { request(&req) })
                 .await;
-            let snapshot = cx.background_executor().spawn(async { fetch() }).await;
+            let mut snapshot = cx.background_executor().spawn(async { fetch() }).await;
+            match result {
+                Ok(Response::Error { message }) => snapshot.error = Some(message),
+                Err(error) => snapshot.error = Some(format!("{error:#}")),
+                _ => {}
+            }
             let _ = this.update_in(cx, |this, window, cx| {
                 this.apply(snapshot, None, window, cx)
             });
@@ -574,7 +580,8 @@ impl Popover {
                 )
             });
 
-        if managed {
+        {
+            let process = p.clone();
             let mut action = div()
                 .id((if alive { "stop" } else { "clear" }, index))
                 .w_5()
@@ -594,6 +601,11 @@ impl Popover {
             row = row.child(action.on_click(cx.listener(
                 move |this, _: &ClickEvent, window, cx| {
                     cx.stop_propagation();
+                    if !managed {
+                        this.confirm_stop = Some(process.clone());
+                        cx.notify();
+                        return;
+                    }
                     this.send(
                         if alive {
                             Request::Stop {
@@ -642,6 +654,59 @@ impl Popover {
             .min_h_0()
             .overflow_y_scroll()
             .pb_2();
+        if let Some(process) = &self.confirm_stop {
+            let confirmed = process.clone();
+            let mut card = div().mx_2().p_3().flex().flex_col().gap_2()
+                .child(div().text_size(px(13.0)).font_weight(FontWeight::SEMIBOLD).child(format!("Stop {}?", process.name)))
+                .child(div().text_size(px(12.0)).child("Started outside Pinch. Stopping it may interrupt another app or lose unsaved work. Only this PID receives SIGTERM; it may stay running or restart."));
+            for detail in [
+                format!("PID {}", process.pid.unwrap_or_default()),
+                format!(
+                    "App (detected): {}",
+                    process.app_bundle.as_deref().unwrap_or("Unknown")
+                ),
+                format!(
+                    "Launched via (detected): {}",
+                    process.launcher_app.as_deref().unwrap_or("Unknown")
+                ),
+                format!(
+                    "Executable: {}",
+                    process.executable.as_deref().unwrap_or("Unknown")
+                ),
+                format!("Command: {}", process.command.join(" ")),
+                format!("Directory: {}", process.cwd),
+            ] {
+                card = card.child(div().text_size(px(11.0)).child(detail));
+            }
+            body =
+                body.child(
+                    card.child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(button("cancel-stop", "Cancel", false, theme).on_click(
+                                cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.confirm_stop = None;
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(
+                                button("confirm-stop", "Stop this process", true, theme).on_click(
+                                    cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                        this.confirm_stop = None;
+                                        this.send(
+                                            Request::StopDiscovered {
+                                                process: Box::new(confirmed.clone()),
+                                            },
+                                            window,
+                                            cx,
+                                        );
+                                    }),
+                                ),
+                            ),
+                    ),
+                );
+        }
         if self.snapshot.onboarding {
             body = body.child(self.onboarding_card(theme, cx));
         }
@@ -655,7 +720,7 @@ impl Popover {
                     .py_2()
                     .text_size(px(12.0))
                     .text_color(theme.danger)
-                    .child(format!("Can't reach the engine: {error}")),
+                    .child(error.clone()),
             );
         }
         if managed.is_empty()
@@ -692,7 +757,7 @@ impl Popover {
             }
         }
         if !unmanaged.is_empty() {
-            body = body.child(section_label("DISCOVERED · READ ONLY", theme));
+            body = body.child(section_label("DISCOVERED", theme));
             for (i, p) in unmanaged {
                 body = body.child(self.process_row(i, p, theme, cx));
             }

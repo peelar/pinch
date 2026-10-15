@@ -81,6 +81,9 @@ fn dispatch(engine: &Arc<Engine>, request: Request) -> Response {
             Request::Stop { name } => Response::Process {
                 process: engine.stop(&name)?,
             },
+            Request::StopDiscovered { process } => Response::Process {
+                process: engine.stop_discovered(&process)?,
+            },
             Request::Clear { name } => {
                 engine.clear(&name)?;
                 Response::Ok
