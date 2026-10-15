@@ -128,6 +128,10 @@ Built, and exercised end to end (CLI + engine, with real servers):
   Codex and installs `skill/SKILL.md` into their skills dirs. The Codex path
   (`~/.codex/skills`) is unverified.
 - `scripts/bundle.sh` builds the ad hoc signed `Pinch.app`.
+- `scripts/dev.py` watches Rust sources and Cargo configuration, incrementally
+  builds debug binaries, and restarts an isolated standalone UI/headless engine
+  preview. UI-only edits retain the engine; build failures retain the previous
+  preview. Development state lives in `target/pinch-dev/state`.
 - Direct macOS installation uses `scripts/install.sh`: a prebuilt bundle in
   `~/Applications`, a CLI symlink, optional zsh/bash PATH setup, and rerun-to-update.
 - `scripts/release.sh` supports Developer ID signing and notarization. Tagged

@@ -145,12 +145,12 @@ impl Popover {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
 
-        // Close when the popover loses focus, like any menu bar popover.
+        // Close on blur, except when the development preview is beside an editor.
         cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() {
                 this.seen_active = true;
                 this.focus.focus(window, cx);
-            } else if this.seen_active {
+            } else if this.seen_active && !std::env::args().any(|arg| arg == "--dev") {
                 dismiss(window, cx);
             }
         })

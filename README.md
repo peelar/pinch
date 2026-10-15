@@ -106,10 +106,31 @@ install those dependencies with `pnpm install --frozen-lockfile`.
 
 ```bash
 cargo build --workspace
+python3 scripts/dev.py                  # watch, rebuild, and reopen the development UI
 cargo run -p pinch-ui                   # popover on its own (talks to a running engine)
 pinchd --headless                       # engine without the menu bar, for tests
 PINCH_HOME=/tmp/pinch-test pinch ps     # isolated state dir
 ```
+
+The watcher requires Python 3 and can also be started with `pnpm dev`. It runs a
+standalone UI preview (which stays open when you switch to your editor) and a
+headless engine with separate state in `target/pinch-dev/state`, leaving the
+installed app alone. Rust source and Cargo
+configuration changes trigger incremental debug builds. UI-only changes restart
+just the preview; engine changes restart both components and re-adopt managed
+processes. Build errors keep the previous preview running. Temporary UI state,
+such as the selected log view, resets on restart.
+
+To populate the preview, use its CLI in another terminal:
+
+```bash
+PINCH_HOME="$PWD/target/pinch-dev/state" target/pinch-dev/pinch ps
+```
+
+Ctrl-C stops the watcher, preview, and development engine. Processes registered
+through the development CLI survive; stop them through that CLI before exiting
+if they are no longer needed. The watcher does not rebuild the installed `.app`
+bundle or exercise menu bar and notification behavior.
 
 Discovered listeners are listed separately from processes registered through
 Pinch. They are read-only: `stop` operates only on registered processes. The CLI
