@@ -469,6 +469,14 @@ impl Popover {
         };
 
         let mut subtitle = vec![p.kind.label().to_string()];
+        if let Some(app) = p
+            .launcher_app
+            .as_deref()
+            .filter(|app| Some(*app) != p.app_bundle.as_deref())
+            && let Some(name) = std::path::Path::new(app).file_stem()
+        {
+            subtitle.push(format!("via {}", name.to_string_lossy()));
+        }
         if let Some(repo) = p.repo.as_deref().and_then(|r| r.rsplit('/').next()) {
             subtitle.push(match &p.branch {
                 Some(b) => format!("{repo}@{b}"),
@@ -523,6 +531,7 @@ impl Popover {
             .gap_3()
             .hover(|s| s.bg(theme.hover))
             .child(dot(color))
+            .child(crate::icons::runtime(&p.kind))
             .child(
                 div()
                     .flex_1()

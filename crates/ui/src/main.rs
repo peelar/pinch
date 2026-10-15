@@ -2,6 +2,7 @@
 //! The runtime stays ready between menu bar clicks.
 //! See ARCHITECTURE.md.
 
+mod icons;
 mod resources;
 mod theme;
 mod view;
@@ -26,7 +27,8 @@ fn main() {
     let anchor = parse_anchor();
     let resident = std::env::args().any(|a| a == "--resident");
     let initial = (!resident).then(view::fetch);
-    application().run(move |cx: &mut App| {
+    let app = application().with_assets(icons::Assets);
+    app.run(move |cx: &mut App| {
         if !resident {
             open(anchor, initial.unwrap(), true, cx);
             return;

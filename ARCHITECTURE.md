@@ -174,7 +174,13 @@ entry. Only registered processes have Stop actions; the engine rejects
 Stop requests for discovered listeners. Runtime names and listening ports do not
 prove that a process is a dev server. Discovery remains a runtime-name heuristic.
 Discovered records include the executable path, command, cwd, PID, and any app
-bundle found in executable/command paths. App bundle names are path-derived,
+bundle found in executable/command paths. When no direct app bundle exists,
+the repository directory names the listener instead of only its runtime. The
+nearest ancestor app is recorded separately and displayed as “via App”, so an
+agent-launched server is not confused with the launching desktop app itself.
+Parent lookup is bounded to 64 hops; reparented processes may have no launcher.
+Runtime icons (Node, Python, npm, pnpm, Yarn, Bun, Cargo) are embedded SVGs
+ported from Zeron’s MIT-licensed file icons, retaining their license. App bundle names are path-derived,
 not verified bundle metadata; processes outside bundles can remain unidentified.
 Discovered IDs include start time as well as PID. Protocol version 2 requires
 updating the engine and clients together.
