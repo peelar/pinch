@@ -395,6 +395,7 @@ impl Engine {
                 .and_then(|p| p.exe())
                 .map(|p| p.to_string_lossy().into_owned()),
             app_bundle: None,
+            launcher_app: None,
             repo: repo.map(|r| r.to_string_lossy().into_owned()),
             branch,
             owner: spawn.owner.clone(),
@@ -612,10 +613,16 @@ impl Engine {
                 .as_deref()
                 .and_then(app_bundle_path)
                 .or_else(|| command.iter().find_map(|arg| app_bundle_path(arg)));
+            let launcher_app = ancestor_app(&inner.sys, Pid::from_u32(pid));
             let label = app_bundle
                 .as_deref()
                 .and_then(|path| Path::new(path).file_stem())
                 .map(|name| name.to_string_lossy().into_owned())
+                .or_else(|| {
+                    repo.as_deref()
+                        .and_then(Path::file_name)
+                        .map(|n| n.to_string_lossy().into_owned())
+                })
                 .unwrap_or_else(|| kind.label().to_string());
             unmanaged.push(ProcessInfo {
                 id: ProcessId(format!("pid:{pid}:{}", proc_.start_time())),
@@ -627,6 +634,7 @@ impl Engine {
                 cwd,
                 executable,
                 app_bundle,
+                launcher_app,
                 repo: repo.map(|r| r.to_string_lossy().into_owned()),
                 branch,
                 owner: None,
@@ -865,6 +873,25 @@ pub fn human_duration(ms: u64) -> String {
         (h, 0) => format!("{h}h"),
         (h, m) => format!("{h}h {m}m"),
     }
+}
+
+fn ancestor_app(sys: &System, pid: Pid) -> Option<String> {
+    let mut current = sys.process(pid)?.parent()?;
+    for _ in 0..64 {
+        let process = sys.process(current)?;
+        if let Some(bundle) = process
+            .exe()
+            .and_then(|p| app_bundle_path(&p.to_string_lossy()))
+        {
+            return Some(bundle);
+        }
+        let parent = process.parent()?;
+        if parent == current {
+            break;
+        }
+        current = parent;
+    }
+    None
 }
 
 fn app_bundle_path(path: &str) -> Option<String> {

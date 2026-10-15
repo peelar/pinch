@@ -33,7 +33,7 @@ impl ProcessKind {
     /// Infer the kind from an executable name (`pnpm`, `/usr/bin/python3`, …).
     pub fn from_exe(exe: &str) -> Self {
         let base = exe.rsplit('/').next().unwrap_or(exe);
-        match base {
+        match base.to_ascii_lowercase().as_str() {
             "pnpm" | "pnpx" => Self::Pnpm,
             "npm" | "npx" => Self::Npm,
             "yarn" => Self::Yarn,
@@ -41,7 +41,7 @@ impl ProcessKind {
             "node" | "deno" => Self::Node,
             "cargo" => Self::Cargo,
             b if b.starts_with("python") || b == "uv" || b == "uvicorn" => Self::Python,
-            other => Self::Other(other.to_string()),
+            _ => Self::Other(base.to_string()),
         }
     }
 
@@ -99,6 +99,9 @@ pub struct ProcessInfo {
     /// App bundle containing the executable or a command-line path.
     #[serde(default)]
     pub app_bundle: Option<String>,
+    /// Nearest ancestor app, distinct from the app containing this executable.
+    #[serde(default)]
+    pub launcher_app: Option<String>,
     /// Repository root the process belongs to; the scope of `ensure`.
     pub repo: Option<String>,
     pub branch: Option<String>,
@@ -295,6 +298,10 @@ mod tests {
             ProcessKind::Pnpm
         );
         assert_eq!(ProcessKind::from_exe("python3.12"), ProcessKind::Python);
+        assert_eq!(
+            ProcessKind::from_exe("/Library/Frameworks/Python.framework/Versions/3.13/Python"),
+            ProcessKind::Python
+        );
         assert_eq!(
             ProcessKind::from_exe("vite"),
             ProcessKind::Other("vite".into())

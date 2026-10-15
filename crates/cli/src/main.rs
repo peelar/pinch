@@ -443,6 +443,9 @@ fn print_table(processes: &[ProcessInfo]) {
                 "  cwd: {}",
                 if p.cwd.is_empty() { "unknown" } else { &p.cwd }
             );
+            if let Some(app) = &p.launcher_app {
+                println!("  via: {app}");
+            }
             println!("  command: {}", p.command.join(" "));
         }
     }
