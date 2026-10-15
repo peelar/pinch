@@ -20,6 +20,7 @@ pinch-proto = { path = "crates/proto" }
 pinch-client = { path = "crates/client" }
 pinch-macos = { path = "crates/macos" }
 
+async-channel = "2"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

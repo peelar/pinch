@@ -20,7 +20,7 @@ Pinch.app (signed bundle, one install)
 │   ├── SQLite registry, Unix socket RPC (pinch-proto)
 │   └── macOS layer: menu bar item + actionable notifications (pinch-macos)
 ├── pinch     CLI: what agents use
-└── pinch-ui  GPUI app, launched on demand, never resident
+└── pinch-ui  GPUI app, prewarmed by the engine for instant opening
 ```
 
 | Crate | Binary | Role |
@@ -33,9 +33,12 @@ Pinch.app (signed bundle, one install)
 
 ### Key decisions
 
-- **The engine is always on, and the UI is not.** An idle GPUI app costs about 200 MB, so the
-  menu bar item and notifications live in the engine (a few MB) and `pinch-ui`
-  is spawned on click, kept warm for a few minutes after closing, then exits.
+- **The UI runtime stays ready.** The engine prewarms `pinch-ui` with a hidden
+  window at startup. Clicks are forwarded over stdin; closing a popover removes
+  its window while retaining the runtime. Opening uses a cached snapshot and
+  refreshes in the background. This spends idle UI memory (roughly 200 MB) to
+  avoid process and renderer startup on each click. The UI exits when the
+  engine closes its stdin.
 - **Each process gets its own shim.** A shim holds the process's PTY, writes its log
   file, and records its exit code. The engine reconnects to shims on start, so
   restarting or upgrading the engine never kills a dev server.
@@ -140,13 +143,20 @@ Deliberate simplifications versus the plan above:
 - **Port discovery shells out to `lsof`** every 2 s instead of using libproc.
 - **Logs in the popover are plain text** (ANSI stripped), not an
   `alacritty_terminal` view, and not yet virtualized.
+- **System CPU/RAM meters** use cached counters from the engine's existing
+  two-second sampling loop, even with the popover closed. Opening reads a fresh
+  snapshot before rendering, so reopening needs no sampling warmup. CPU still
+  needs two readings when the engine itself first starts. Both use green below
+  60%, amber from 60%, and red from 85% utilization.
+  Hover details include available RAM and swap; RAM fill measures occupancy.
 - Zeron's frost/running_pill/theme code is not ported; the popover uses native
   window vibrancy and its own small theme.
 - The engine is not installed as a launchd agent yet; the CLI starts it on demand.
 
-Not verified by me: how the popover actually looks (I couldn't take screenshots),
-clicking the notification buttons, and the click-to-toggle timing of the icon.
-Those need a human at the machine.
+The labeled CPU/RAM/uptime layout has been checked in a packaged preview.
+Resident UI startup, opening over stdin, and shutdown on engine disconnect have
+been smoke-tested. Notification actions and measured menu bar click latency
+remain unverified.
 
 Next up: launchd agent + login item, alacritty-based log view, the Claude Code
 hook from docs/agent-instructions.md, more staleness signals (deleted

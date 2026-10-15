@@ -123,6 +123,7 @@ fn snapshot() -> Result<(Vec<ProcessInfo>, Vec<Decision>)> {
         Response::Snapshot {
             processes,
             decisions,
+            ..
         } => Ok((processes, decisions)),
         other => bail!("unexpected reply: {other:?}"),
     }

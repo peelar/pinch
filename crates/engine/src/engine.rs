@@ -13,12 +13,13 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use pinch_client::{home, logs_dir, now_ms};
 use pinch_proto::{
     Decision, DecisionAnswer, Metrics, Origin, ProcessId, ProcessInfo, ProcessKind, Spawn, Status,
+    SystemMetrics,
 };
 use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -66,6 +67,8 @@ struct Inner {
     decisions: Vec<Decision>,
     unmanaged: Vec<ProcessInfo>,
     sys: System,
+    system_metrics: SystemMetrics,
+    system_sampled_at: Option<Instant>,
     counter: u64,
     last_attention: usize,
 }
@@ -85,6 +88,24 @@ fn refresh_kind() -> ProcessRefreshKind {
         .with_cwd(UpdateKind::OnlyIfNotSet)
 }
 
+fn refresh_system_metrics(inner: &mut Inner) {
+    inner.sys.refresh_cpu_usage();
+    inner.sys.refresh_memory();
+    let cpu_percent = inner
+        .system_sampled_at
+        .filter(|at| at.elapsed() >= sysinfo::MINIMUM_CPU_UPDATE_INTERVAL)
+        .map(|_| inner.sys.global_cpu_usage().clamp(0.0, 100.0));
+    inner.system_sampled_at = Some(Instant::now());
+    inner.system_metrics = SystemMetrics {
+        cpu_percent,
+        memory_used_bytes: inner.sys.used_memory(),
+        memory_total_bytes: inner.sys.total_memory(),
+        memory_available_bytes: inner.sys.available_memory(),
+        swap_used_bytes: inner.sys.used_swap(),
+        sampled_at_ms: now_ms(),
+    };
+}
+
 impl Engine {
     pub fn new(cfg: Config, hooks: Hooks) -> Result<Arc<Self>> {
         fs::create_dir_all(logs_dir())?;
@@ -101,15 +122,19 @@ impl Engine {
             }
         }
 
+        let mut inner = Inner {
+            entries,
+            decisions: Vec::new(),
+            unmanaged: Vec::new(),
+            sys,
+            system_metrics: SystemMetrics::default(),
+            system_sampled_at: None,
+            counter: 0,
+            last_attention: 0,
+        };
+        refresh_system_metrics(&mut inner);
         let engine = Arc::new(Self {
-            inner: Mutex::new(Inner {
-                entries,
-                decisions: Vec::new(),
-                unmanaged: Vec::new(),
-                sys,
-                counter: 0,
-                last_attention: 0,
-            }),
+            inner: Mutex::new(inner),
             cfg,
             hooks,
         });
@@ -164,12 +189,12 @@ impl Engine {
         self.spawn_locked(&mut inner, spawn)
     }
 
-    pub fn snapshot(&self) -> (Vec<ProcessInfo>, Vec<Decision>) {
+    pub fn snapshot(&self) -> (Vec<ProcessInfo>, Vec<Decision>, SystemMetrics) {
         let inner = self.lock();
         let mut processes: Vec<ProcessInfo> =
             inner.entries.iter().map(|e| e.info.clone()).collect();
         processes.extend(inner.unmanaged.iter().cloned());
-        (processes, inner.decisions.clone())
+        (processes, inner.decisions.clone(), inner.system_metrics)
     }
 
     pub fn stop(&self, target: &str) -> Result<ProcessInfo> {
@@ -195,6 +220,20 @@ impl Engine {
             );
         }
         bail!("no process matching '{target}'")
+    }
+
+    pub fn clear(&self, target: &str) -> Result<()> {
+        let mut inner = self.lock();
+        let idx = find_managed(&inner, target)
+            .ok_or_else(|| anyhow!("no managed process matching '{target}'"))?;
+        if inner.entries[idx].info.status.is_alive() {
+            bail!("stop '{}' before clearing it", inner.entries[idx].info.name);
+        }
+        let entry = inner.entries.remove(idx);
+        drop_decisions_for(&mut inner, &entry.info.id);
+        sync_attention(&self.hooks, &mut inner);
+        save(&inner);
+        Ok(())
     }
 
     pub fn restart(self: &Arc<Self>, target: &str) -> Result<ProcessInfo> {
@@ -409,6 +448,7 @@ impl Engine {
         let connected_ports = lsof::established_local_ports();
 
         let mut inner = self.lock();
+        refresh_system_metrics(&mut inner);
         inner
             .sys
             .refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind());
@@ -858,6 +898,8 @@ mod identity_tests {
                 decisions: vec![],
                 unmanaged: vec![info],
                 sys: System::new(),
+                system_metrics: SystemMetrics::default(),
+                system_sampled_at: None,
                 counter: 0,
                 last_attention: 0,
             }),
