@@ -6,6 +6,7 @@
   "description": "Release tooling for the Pinch macOS app",
   "packageManager": "pnpm@11.25.0",
   "scripts": {
+    "dev": "python3 scripts/dev.py",
     "changeset": "changeset",
     "version": "changeset version && node scripts/sync-version.mjs",
     "check:version": "node scripts/sync-version.mjs --check"
