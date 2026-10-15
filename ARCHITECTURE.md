@@ -165,7 +165,8 @@ worktree, ended agent session), sparklines.
 ### Process provenance and identification
 
 Registered processes and discovered listeners are separate sections in both the
-popover and CLI. Only registered processes have Stop actions; the engine rejects
+popover and CLI. Stopped registered processes show a visible × button to clear their registry
+entry. Only registered processes have Stop actions; the engine rejects
 Stop requests for discovered listeners. Runtime names and listening ports do not
 prove that a process is a dev server. Discovery remains a runtime-name heuristic.
 Discovered records include the executable path, command, cwd, PID, and any app

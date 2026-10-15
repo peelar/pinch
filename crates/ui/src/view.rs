@@ -123,6 +123,12 @@ pub fn height_for(snapshot: &Snapshot) -> f32 {
     if unmanaged > 0.0 {
         h += 34.0 + unmanaged * 68.0;
     }
+    h -= snapshot
+        .processes
+        .iter()
+        .filter(|p| !p.status.is_alive())
+        .count() as f32
+        * 15.0;
     h.clamp(240.0, 640.0)
 }
 
@@ -456,11 +462,10 @@ impl Popover {
     ) -> AnyElement {
         let managed = p.origin == Origin::Managed;
         let alive = p.status.is_alive();
-        let color = match (&p.status, managed) {
-            (Status::Running, true) => theme.running,
-            (Status::Running, false) => theme.faint,
-            (Status::Stale, _) => theme.stale,
-            (Status::Exited { .. }, _) => theme.stopped,
+        let color = match &p.status {
+            Status::Running => theme.running,
+            Status::Stale => theme.stale,
+            Status::Exited { .. } => theme.stopped,
         };
 
         let mut subtitle = vec![p.kind.label().to_string()];
@@ -472,6 +477,10 @@ impl Popover {
         }
         if let Some(owner) = &p.owner {
             subtitle.push(owner.clone());
+        }
+
+        if let Status::Exited { code: Some(code) } = &p.status {
+            subtitle.push(format!("exit {code}"));
         }
 
         if !managed {
@@ -535,56 +544,62 @@ impl Popover {
                             .text_color(theme.muted)
                             .child(subtitle.join(" · ")),
                     )
-                    .child(
-                        div()
-                            .font_family(MONO)
-                            .text_size(px(10.0))
-                            .text_color(theme.muted)
-                            .child(right_bottom),
-                    ),
+                    .when(alive, |column| {
+                        column.child(
+                            div()
+                                .font_family(MONO)
+                                .text_size(px(10.0))
+                                .text_color(theme.muted)
+                                .child(right_bottom),
+                        )
+                    }),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_end()
-                    .font_family(MONO)
-                    .child(div().text_size(px(12.0)).child(right_top)),
-            );
+            .when(alive, |row| {
+                row.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_end()
+                        .font_family(MONO)
+                        .child(div().text_size(px(12.0)).child(right_top)),
+                )
+            });
 
         if managed {
-            row = row.child(
-                div()
-                    .id((if alive { "stop" } else { "clear" }, index))
-                    .w_5()
-                    .h_5()
-                    .rounded_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(px(11.0))
-                    .text_color(theme.muted)
-                    .invisible()
-                    .group_hover("row", |s| s.visible())
-                    .hover(|s| s.bg(theme.hover).text_color(theme.danger))
-                    .child("✕")
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        cx.stop_propagation();
-                        this.send(
-                            if alive {
-                                Request::Stop {
-                                    name: target.clone(),
-                                }
-                            } else {
-                                Request::Clear {
-                                    name: target.clone(),
-                                }
-                            },
-                            window,
-                            cx,
-                        );
-                    })),
-            );
+            let mut action = div()
+                .id((if alive { "stop" } else { "clear" }, index))
+                .w_5()
+                .h_5()
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(11.0))
+                .text_color(theme.muted)
+                .hover(|s| s.bg(theme.hover).text_color(theme.danger))
+                .cursor_pointer()
+                .child("✕");
+            if alive {
+                action = action.invisible().group_hover("row", |s| s.visible());
+            }
+            row = row.child(action.on_click(cx.listener(
+                move |this, _: &ClickEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.send(
+                        if alive {
+                            Request::Stop {
+                                name: target.clone(),
+                            }
+                        } else {
+                            Request::Clear {
+                                name: target.clone(),
+                            }
+                        },
+                        window,
+                        cx,
+                    );
+                },
+            )));
         }
         if managed {
             row = row.cursor_pointer().on_click(cx.listener(
