@@ -10,7 +10,9 @@ use gpui::{
 use pinch_client::{now_ms, onboarding, request, request_autostart};
 use pinch_proto::{Decision, DecisionAnswer, Origin, ProcessInfo, Request, Response, Status};
 
+use crate::resources;
 use crate::theme::Theme;
+use pinch_proto::SystemMetrics;
 
 pub const WIDTH: f32 = 400.0;
 const LOG_HEIGHT: f32 = 520.0;
@@ -18,6 +20,8 @@ const MONO: &str = "Menlo";
 
 #[derive(Default, Clone)]
 pub struct Snapshot {
+    pub loading: bool,
+    pub system: SystemMetrics,
     pub processes: Vec<ProcessInfo>,
     pub decisions: Vec<Decision>,
     pub error: Option<String>,
@@ -25,13 +29,46 @@ pub struct Snapshot {
     pub onboarding: bool,
 }
 
+static CACHE: std::sync::Mutex<Option<Snapshot>> = std::sync::Mutex::new(None);
+
+static CLOSED_AT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+pub fn recently_closed() -> bool {
+    CLOSED_AT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some_and(|t| t.elapsed() < Duration::from_millis(400))
+}
+
+fn dismiss(window: &mut Window, cx: &mut Context<Popover>) {
+    *CLOSED_AT.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
+    if std::env::args().any(|a| a == "--resident") {
+        window.remove_window();
+    } else {
+        cx.quit();
+    }
+}
+
+pub fn cached() -> Snapshot {
+    CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .unwrap_or_else(|| Snapshot {
+            loading: true,
+            ..Default::default()
+        })
+}
+
 pub fn fetch() -> Snapshot {
     let onboarding = onboarding::needed() && !onboarding::detect().is_empty();
     let snapshot = fetch_engine();
-    Snapshot {
+    let snapshot = Snapshot {
         onboarding,
         ..snapshot
-    }
+    };
+    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some(snapshot.clone());
+    snapshot
 }
 
 fn fetch_engine() -> Snapshot {
@@ -39,7 +76,10 @@ fn fetch_engine() -> Snapshot {
         Ok(Response::Snapshot {
             processes,
             decisions,
+            system,
         }) => Snapshot {
+            loading: false,
+            system,
             processes,
             decisions,
             error: None,
@@ -78,10 +118,10 @@ pub fn height_for(snapshot: &Snapshot) -> f32 {
         h += 150.0;
     }
     if managed > 0.0 {
-        h += 30.0 + managed * 54.0;
+        h += 30.0 + managed * 68.0;
     }
     if unmanaged > 0.0 {
-        h += 34.0 + unmanaged * 54.0;
+        h += 34.0 + unmanaged * 68.0;
     }
     h.clamp(240.0, 640.0)
 }
@@ -92,6 +132,7 @@ enum Screen {
 }
 
 pub struct Popover {
+    resources: gpui::Entity<SystemMetrics>,
     snapshot: Snapshot,
     screen: Screen,
     focus: FocusHandle,
@@ -110,15 +151,15 @@ impl Popover {
                 this.seen_active = true;
                 this.focus.focus(window, cx);
             } else if this.seen_active {
-                cx.quit();
+                dismiss(window, cx);
             }
         })
         .detach();
 
-        // Poll the engine once a second (plus the open log, if any).
+        // The engine samples system metrics even while the popover is closed.
+        // Poll its cached snapshot and the open log once a second.
         cx.spawn_in(window, async move |this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_secs(1)).await;
                 let Ok(logs_for) = this.update(cx, |this, _| match &this.screen {
                     Screen::Logs { name, .. } => Some(name.clone()),
                     Screen::List => None,
@@ -139,11 +180,13 @@ impl Popover {
                 if applied.is_err() {
                     break;
                 }
+                cx.background_executor().timer(Duration::from_secs(1)).await;
             }
         })
         .detach();
 
         Self {
+            resources: cx.new(|_| snapshot.system),
             snapshot,
             screen: Screen::List,
             focus,
@@ -160,6 +203,10 @@ impl Popover {
         cx: &mut Context<Self>,
     ) {
         let old_height = height_for(&self.snapshot);
+        self.resources.update(cx, |current, cx| {
+            *current = snapshot.system;
+            cx.notify();
+        });
         self.snapshot = snapshot;
         match (&mut self.screen, logs) {
             (Screen::Logs { text, .. }, Some(fresh)) if *text != fresh => {
@@ -233,7 +280,7 @@ impl Popover {
         if event.keystroke.key == "escape" {
             match self.screen {
                 Screen::Logs { .. } => self.back(window, cx),
-                Screen::List => cx.quit(),
+                Screen::List => dismiss(window, cx),
             }
         }
     }
@@ -252,10 +299,12 @@ impl Popover {
             .filter_map(|p| p.metrics)
             .map(|m| m.rss_bytes)
             .sum();
-        let summary = if live.is_empty() {
+        let summary = if self.snapshot.loading {
+            "Loading…".to_string()
+        } else if live.is_empty() {
             "all quiet".to_string()
         } else {
-            format!("{} running · {}", live.len(), bytes(rss))
+            format!("{} running · {} RAM", live.len(), bytes(rss))
         };
         div()
             .flex()
@@ -442,21 +491,17 @@ impl Popover {
         };
         let right_bottom = match (alive, p.metrics) {
             (true, Some(m)) => format!(
-                "{:.0}% · {} · {}",
+                "CPU {:.0}% · {} RAM · up {}",
                 m.cpu_percent,
                 bytes(m.rss_bytes),
                 duration(now_ms().saturating_sub(p.started_at_ms))
             ),
-            (true, None) => duration(now_ms().saturating_sub(p.started_at_ms)),
+            (true, None) => format!("up {}", duration(now_ms().saturating_sub(p.started_at_ms))),
             _ => String::new(),
         };
 
         let name = p.name.clone();
-        let target = if managed {
-            p.name.clone()
-        } else {
-            p.id.0.clone()
-        };
+        let target = p.id.0.clone();
         let mut row = div()
             .id(("row", index))
             .group("row")
@@ -489,6 +534,13 @@ impl Popover {
                             .text_size(px(11.0))
                             .text_color(theme.muted)
                             .child(subtitle.join(" · ")),
+                    )
+                    .child(
+                        div()
+                            .font_family(MONO)
+                            .text_size(px(10.0))
+                            .text_color(theme.muted)
+                            .child(right_bottom),
                     ),
             )
             .child(
@@ -497,19 +549,13 @@ impl Popover {
                     .flex_col()
                     .items_end()
                     .font_family(MONO)
-                    .child(div().text_size(px(12.0)).child(right_top))
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(theme.muted)
-                            .child(right_bottom),
-                    ),
+                    .child(div().text_size(px(12.0)).child(right_top)),
             );
 
-        if alive && managed {
+        if managed {
             row = row.child(
                 div()
-                    .id(("stop", index))
+                    .id((if alive { "stop" } else { "clear" }, index))
                     .w_5()
                     .h_5()
                     .rounded_full()
@@ -525,8 +571,14 @@ impl Popover {
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         cx.stop_propagation();
                         this.send(
-                            Request::Stop {
-                                name: target.clone(),
+                            if alive {
+                                Request::Stop {
+                                    name: target.clone(),
+                                }
+                            } else {
+                                Request::Clear {
+                                    name: target.clone(),
+                                }
                             },
                             window,
                             cx,
@@ -582,7 +634,11 @@ impl Popover {
                     .child(format!("Can't reach the engine: {error}")),
             );
         }
-        if managed.is_empty() && unmanaged.is_empty() && self.snapshot.error.is_none() {
+        if managed.is_empty()
+            && unmanaged.is_empty()
+            && self.snapshot.error.is_none()
+            && !self.snapshot.loading
+        {
             body = body.child(
                 div()
                     .flex()
@@ -774,7 +830,7 @@ impl Popover {
                         cx.quit();
                     })),
             )
-            .child("esc to close")
+            .child(resources::indicators(&self.resources, theme, cx))
     }
 }
 
@@ -881,9 +937,9 @@ fn strip_ansi(line: &str) -> String {
 fn bytes(n: u64) -> String {
     let mb = n as f64 / (1024.0 * 1024.0);
     if mb >= 1024.0 {
-        format!("{:.1}G", mb / 1024.0)
+        format!("{:.1} GiB", mb / 1024.0)
     } else {
-        format!("{mb:.0}M")
+        format!("{mb:.0} MiB")
     }
 }
 

@@ -4050,6 +4050,7 @@ dependencies = [
 name = "pinch-ui"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "gpui",
  "gpui_platform",
  "pinch-client",

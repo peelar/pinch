@@ -1,63 +1,59 @@
-//! Opening and closing `pinch-ui` when the menu bar icon is clicked.
+//! Keep the UI runtime ready and forward menu bar clicks over its stdin.
 
-use std::process::Command;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::io::Write;
+use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 
 use pinch_macos::Anchor;
 
 #[derive(Default)]
-struct State {
-    pid: Option<u32>,
-    closed_at: Option<Instant>,
-}
-
-#[derive(Default)]
 pub struct Launcher {
-    state: Arc<Mutex<State>>,
+    child: Mutex<Option<Child>>,
 }
 
 impl Launcher {
-    /// Click on an open popover closes it; click on a closed one opens it.
-    pub fn toggle(&self, anchor: Option<Anchor>) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+    pub fn prepare(&self) {
+        let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
+        Self::ensure_running(&mut child);
+    }
 
-        if let Some(pid) = state.pid {
-            // SAFETY: plain signal delivery to the UI process we spawned.
-            unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-            return;
+    fn ensure_running(child: &mut Option<Child>) {
+        if let Some(process) = child.as_mut() {
+            match process.try_wait() {
+                Ok(None) => return,
+                Ok(Some(_)) => {}
+                Err(e) => {
+                    eprintln!("pinchd: could not inspect pinch-ui: {e}");
+                    return;
+                }
+            }
         }
-        // The popover closes itself when it loses focus, which happens just
-        // before the click that would reopen it lands. Treat that click as
-        // "close", not "open again".
-        if state
-            .closed_at
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(400))
-        {
-            return;
-        }
-
+        *child = None;
         let Ok(exe) = pinch_client::sibling_exe("pinch-ui") else {
             eprintln!("pinchd: pinch-ui not found next to pinchd");
             return;
         };
-        let mut cmd = Command::new(exe);
-        if let Some(a) = anchor {
-            cmd.arg("--anchor")
-                .arg(format!("{},{}", a.x_center, a.y_bottom));
-        }
-        match cmd.spawn() {
-            Ok(mut child) => {
-                state.pid = Some(child.id());
-                let shared = Arc::clone(&self.state);
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                    let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
-                    state.pid = None;
-                    state.closed_at = Some(Instant::now());
-                });
-            }
+        match Command::new(exe)
+            .arg("--resident")
+            .stdin(Stdio::piped())
+            .spawn()
+        {
+            Ok(process) => *child = Some(process),
             Err(e) => eprintln!("pinchd: could not launch pinch-ui: {e}"),
+        }
+    }
+
+    pub fn toggle(&self, anchor: Option<Anchor>) {
+        let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
+        Self::ensure_running(&mut child);
+        if let Some(input) = child.as_mut().and_then(|p| p.stdin.as_mut()) {
+            let command = anchor.map_or_else(
+                || "toggle".into(),
+                |a| format!("{},{}", a.x_center, a.y_bottom),
+            );
+            if let Err(e) = writeln!(input, "{command}") {
+                eprintln!("pinchd: could not toggle pinch-ui: {e}");
+            }
         }
     }
 }

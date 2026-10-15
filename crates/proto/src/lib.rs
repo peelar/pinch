@@ -119,6 +119,17 @@ pub struct Metrics {
     pub rss_bytes: u64,
 }
 
+/// Cached whole-computer counters, sampled by the engine independently of clients.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct SystemMetrics {
+    pub cpu_percent: Option<f32>,
+    pub memory_used_bytes: u64,
+    pub memory_total_bytes: u64,
+    pub memory_available_bytes: u64,
+    pub swap_used_bytes: u64,
+    pub sampled_at_ms: u64,
+}
+
 /// Something the engine wants a human to confirm, shown as a notification,
 /// in the UI's inbox, and in `pinch inbox`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,6 +178,10 @@ pub enum Request {
     Stop {
         name: String,
     },
+    /// Remove a stopped managed process from the registry.
+    Clear {
+        name: String,
+    },
     Restart {
         name: String,
     },
@@ -198,6 +213,8 @@ pub enum Response {
     Snapshot {
         processes: Vec<ProcessInfo>,
         decisions: Vec<Decision>,
+        #[serde(default)]
+        system: SystemMetrics,
     },
     Logs {
         text: String,
@@ -211,6 +228,44 @@ pub enum Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshots_from_older_engines_have_unavailable_system_metrics() {
+        let response: Response =
+            serde_json::from_str(r#"{"type":"snapshot","processes":[],"decisions":[]}"#).unwrap();
+        let Response::Snapshot { system, .. } = response else {
+            panic!("expected snapshot");
+        };
+        assert!(system.cpu_percent.is_none());
+        assert_eq!(system.memory_total_bytes, 0);
+        assert_eq!(system.sampled_at_ms, 0);
+    }
+
+    #[test]
+    fn snapshots_preserve_cached_system_readings() {
+        let response = Response::Snapshot {
+            processes: vec![],
+            decisions: vec![],
+            system: SystemMetrics {
+                cpu_percent: Some(42.0),
+                memory_used_bytes: 12_000,
+                memory_total_bytes: 16_000,
+                memory_available_bytes: 4_000,
+                swap_used_bytes: 500,
+                sampled_at_ms: 123_456,
+            },
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        let Response::Snapshot { system, .. } = serde_json::from_str(&json).unwrap() else {
+            panic!("expected snapshot");
+        };
+        assert_eq!(system.cpu_percent, Some(42.0));
+        assert_eq!(system.memory_used_bytes, 12_000);
+        assert_eq!(system.memory_total_bytes, 16_000);
+        assert_eq!(system.memory_available_bytes, 4_000);
+        assert_eq!(system.swap_used_bytes, 500);
+        assert_eq!(system.sampled_at_ms, 123_456);
+    }
 
     #[test]
     fn messages_round_trip_as_tagged_json() {

@@ -99,6 +99,7 @@ fn main() -> Result<()> {
     // The menu bar must own the main thread; everything else runs elsewhere.
     pinch_macos::run(callbacks, move |handle| {
         let _ = MENU_BAR.set(handle);
+        first_launch_ui.prepare();
         // First launch from the desktop app: show the popover once so the
         // onboarding card is seen without a terminal.
         if pinch_client::onboarding::needed() && !pinch_client::onboarding::detect().is_empty() {
