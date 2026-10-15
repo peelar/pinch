@@ -71,15 +71,20 @@ fn dispatch(engine: &Arc<Engine>, request: Request) -> Response {
                 process: engine.run(spawn)?,
             },
             Request::Snapshot => {
-                let (processes, decisions) = engine.snapshot();
+                let (processes, decisions, system) = engine.snapshot();
                 Response::Snapshot {
                     processes,
                     decisions,
+                    system,
                 }
             }
             Request::Stop { name } => Response::Process {
                 process: engine.stop(&name)?,
             },
+            Request::Clear { name } => {
+                engine.clear(&name)?;
+                Response::Ok
+            }
             Request::Restart { name } => Response::Process {
                 process: engine.restart(&name)?,
             },

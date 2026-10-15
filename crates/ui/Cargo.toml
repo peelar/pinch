@@ -14,3 +14,4 @@ pinch-proto.workspace = true
 pinch-client.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
+async-channel.workspace = true
