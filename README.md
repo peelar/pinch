@@ -2,6 +2,8 @@
 
 # pinch
 
+<img width="390" height="628" alt="CleanShot 2026-10-16 at 12 26 15@2x" src="https://github.com/user-attachments/assets/94ee5142-e2ea-4437-b97b-44ca30d5d06f" />
+
 **Your agents start things. Pinch keeps count.**
 
 A tiny daemon with an unreasonable commitment to your RAM. Pinch keeps your
