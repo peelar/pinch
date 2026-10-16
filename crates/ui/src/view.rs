@@ -165,6 +165,7 @@ pub struct Popover {
     log_scroll: ScrollHandle,
     seen_active: bool,
     confirm_stop: Option<ProcessInfo>,
+    stop_details_open: bool,
 }
 
 impl Popover {
@@ -220,6 +221,7 @@ impl Popover {
             log_scroll: ScrollHandle::new(),
             seen_active: false,
             confirm_stop: None,
+            stop_details_open: false,
         }
     }
 
@@ -241,7 +243,7 @@ impl Popover {
                 *text = fresh;
                 self.log_scroll.scroll_to_bottom();
             }
-            (Screen::List, _) => {
+            (Screen::List, _) if self.confirm_stop.is_none() => {
                 let height = height_for(&self.snapshot);
                 if (height - old_height).abs() > 1.0 {
                     window.resize(size(px(WIDTH), px(height)));
@@ -315,6 +317,11 @@ impl Popover {
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if event.keystroke.key == "escape" {
+            if self.confirm_stop.take().is_some() {
+                window.resize(size(px(WIDTH), px(height_for(&self.snapshot))));
+                cx.notify();
+                return;
+            }
             match self.screen {
                 Screen::Logs { .. } => self.back(window, cx),
                 Screen::List => dismiss(window, cx),
@@ -666,6 +673,8 @@ impl Popover {
                     cx.stop_propagation();
                     if !managed {
                         this.confirm_stop = Some(process.clone());
+                        this.stop_details_open = false;
+                        window.resize(size(px(WIDTH), px(440.0)));
                         cx.notify();
                         return;
                     }
@@ -733,65 +742,91 @@ impl Popover {
         managed.sort_by(by_resources);
         unmanaged.sort_by(by_resources);
 
+        if let Some(process) = &self.confirm_stop {
+            let confirmed = process.clone();
+            let mut card = div().flex().flex_col().flex_1().min_h_0().px_4().pb_3().gap_2()
+                .child(div().flex_shrink_0().text_size(px(13.0)).font_weight(FontWeight::SEMIBOLD).child("Stop this process?"))
+                .child(div().flex_shrink_0().truncate().text_size(px(12.0)).child(process.name.clone()))
+                .child(div().flex_shrink_0().text_size(px(12.0)).child("Started outside Pinch. Stopping it may interrupt another app or lose unsaved work. Only this PID receives SIGTERM; it may stay running or restart."))
+                .child(div().flex_shrink_0().text_size(px(11.0)).child(format!("PID {}", process.pid.unwrap_or_default())))
+                .child(div().id("stop-details-toggle").flex_shrink_0().cursor_pointer().text_size(px(11.0))
+                    .child(if self.stop_details_open { "▾ Process details" } else { "▸ Process details" })
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.stop_details_open = !this.stop_details_open;
+                        cx.notify();
+                    })));
+            if self.stop_details_open {
+                let mut details = div()
+                    .id("stop-details")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap_2();
+                for detail in [
+                    format!("Name: {}", process.name),
+                    format!(
+                        "App (detected): {}",
+                        process.app_bundle.as_deref().unwrap_or("Unknown")
+                    ),
+                    format!(
+                        "Launched via (detected): {}",
+                        process.launcher_app.as_deref().unwrap_or("Unknown")
+                    ),
+                    format!(
+                        "Executable: {}",
+                        process.executable.as_deref().unwrap_or("Unknown")
+                    ),
+                    format!("Command: {}", process.command.join(" ")),
+                    format!("Directory: {}", process.cwd),
+                ] {
+                    details =
+                        details.child(div().flex_shrink_0().text_size(px(11.0)).child(detail));
+                }
+                card = card.child(details);
+            } else {
+                card = card.child(div().flex_1());
+            }
+            return card
+                .child(
+                    div()
+                        .flex()
+                        .flex_shrink_0()
+                        .gap_2()
+                        .child(
+                            button("cancel-stop", "Cancel", false, theme).on_click(cx.listener(
+                                |this, _: &ClickEvent, window, cx| {
+                                    this.confirm_stop = None;
+                                    window.resize(size(px(WIDTH), px(height_for(&this.snapshot))));
+                                    cx.notify();
+                                },
+                            )),
+                        )
+                        .child(
+                            button("confirm-stop", "Stop this process", true, theme).on_click(
+                                cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                    this.confirm_stop = None;
+                                    window.resize(size(px(WIDTH), px(height_for(&this.snapshot))));
+                                    this.send(
+                                        Request::StopDiscovered {
+                                            process: Box::new(confirmed.clone()),
+                                        },
+                                        window,
+                                        cx,
+                                    );
+                                }),
+                            ),
+                        ),
+                )
+                .into_any_element();
+        }
         let mut body = div()
             .id("list")
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
             .mb_3();
-        if let Some(process) = &self.confirm_stop {
-            let confirmed = process.clone();
-            let mut card = div().mx_2().p_3().flex().flex_col().gap_2()
-                .child(div().text_size(px(13.0)).font_weight(FontWeight::SEMIBOLD).child(format!("Stop {}?", process.name)))
-                .child(div().text_size(px(12.0)).child("Started outside Pinch. Stopping it may interrupt another app or lose unsaved work. Only this PID receives SIGTERM; it may stay running or restart."));
-            for detail in [
-                format!("PID {}", process.pid.unwrap_or_default()),
-                format!(
-                    "App (detected): {}",
-                    process.app_bundle.as_deref().unwrap_or("Unknown")
-                ),
-                format!(
-                    "Launched via (detected): {}",
-                    process.launcher_app.as_deref().unwrap_or("Unknown")
-                ),
-                format!(
-                    "Executable: {}",
-                    process.executable.as_deref().unwrap_or("Unknown")
-                ),
-                format!("Command: {}", process.command.join(" ")),
-                format!("Directory: {}", process.cwd),
-            ] {
-                card = card.child(div().text_size(px(11.0)).child(detail));
-            }
-            body =
-                body.child(
-                    card.child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .child(button("cancel-stop", "Cancel", false, theme).on_click(
-                                cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    this.confirm_stop = None;
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(
-                                button("confirm-stop", "Stop this process", true, theme).on_click(
-                                    cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                        this.confirm_stop = None;
-                                        this.send(
-                                            Request::StopDiscovered {
-                                                process: Box::new(confirmed.clone()),
-                                            },
-                                            window,
-                                            cx,
-                                        );
-                                    }),
-                                ),
-                            ),
-                    ),
-                );
-        }
         if self.snapshot.onboarding {
             body = body.child(self.onboarding_card(theme, cx));
         }
