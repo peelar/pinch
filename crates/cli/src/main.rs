@@ -141,7 +141,7 @@ enum Command {
 
 fn main() {
     if let Err(e) = run() {
-        eprintln!("pinch: {e:#}");
+        eprintln!("{}: {e:#}", pinch_client::installation::cli_name());
         std::process::exit(1);
     }
 }
@@ -227,8 +227,9 @@ fn run() -> Result<()> {
                 println!("{verb}: {}", describe(&process));
                 if !already_running && process.ports.is_empty() {
                     println!(
-                        "  logs: pinch logs {0}   ·   wait for port: pinch wait {0}",
-                        process.name
+                        "  logs: {1} logs {0}   ·   wait for port: {1} wait {0}",
+                        process.name,
+                        pinch_client::installation::cli_name()
                     );
                 }
             }
@@ -332,7 +333,11 @@ fn run() -> Result<()> {
             } else {
                 for d in decisions {
                     println!("{}  {}", d.id, d.reason);
-                    println!("    pinch answer {} kill|keep|snooze", d.id);
+                    println!(
+                        "    {} answer {} kill|keep|snooze",
+                        pinch_client::installation::cli_name(),
+                        d.id
+                    );
                 }
             }
         }
@@ -348,6 +353,13 @@ fn run() -> Result<()> {
         Command::Setup { yes } => setup::run(yes)?,
         Command::Quit => {
             if pinch_client::request(&Request::Shutdown).is_ok() {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while pinch_client::socket_path().exists() {
+                    if Instant::now() >= deadline {
+                        bail!("engine did not finish shutting down; installation was not changed");
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
                 println!("engine stopped (managed processes are still running)");
             } else {
                 println!("engine was not running");
@@ -368,8 +380,9 @@ fn wait_for_port(name: &str, timeout: Duration) -> Result<ProcessInfo> {
         match found {
             Some(p) if matches!(p.status, Status::Exited { .. }) => {
                 bail!(
-                    "{} exited before listening; see `pinch logs {}`",
+                    "{} exited before listening; see `{} logs {}`",
                     p.name,
+                    pinch_client::installation::cli_name(),
                     p.name
                 )
             }

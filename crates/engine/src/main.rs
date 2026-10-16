@@ -45,44 +45,26 @@ fn main() -> Result<()> {
     let engine = Engine::new(
         Config::from_env(),
         Hooks {
-            decision_created: Box::new(|decision| {
+            decisions_changed: Box::new(|decisions| {
                 if let Some(menu_bar) = MENU_BAR.get() {
-                    menu_bar.notify(
-                        &decision.id,
-                        "Is this server still needed?",
-                        &decision.reason,
-                    );
-                }
-            }),
-            attention_changed: Box::new(|n| {
-                if let Some(menu_bar) = MENU_BAR.get() {
-                    menu_bar.set_badge(n);
+                    menu_bar.sync_decisions(decisions, false);
                 }
             }),
         },
     )?;
 
-    // Sample once before serving so the very first request sees real data.
-    engine.tick();
-    {
-        let engine = Arc::clone(&engine);
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_secs(2));
-                engine.tick();
-            }
-        });
-    }
     runtime.spawn(server::serve(listener, Arc::clone(&engine)));
     eprintln!("pinchd {} listening", env!("CARGO_PKG_VERSION"));
 
     if headless {
+        start_sampler(Arc::clone(&engine));
         std::thread::park();
         return Ok(());
     }
 
     let ui = Arc::new(ui::Launcher::default());
     let first_launch_ui = Arc::clone(&ui);
+    let action_engine = Arc::clone(&engine);
     let callbacks = Callbacks {
         on_click: Box::new(move |anchor| ui.toggle(anchor)),
         on_action: Box::new(move |decision, action| {
@@ -91,22 +73,43 @@ fn main() -> Result<()> {
                 Action::Keep => DecisionAnswer::Keep,
                 Action::Snooze => DecisionAnswer::Snooze,
             };
-            if let Err(e) = engine.answer(&decision, answer) {
-                eprintln!("pinchd: could not apply {action:?} to {decision}: {e:#}");
-            }
+            let engine = Arc::clone(&action_engine);
+            std::thread::spawn(move || {
+                engine.tick();
+                if let Err(e) = engine.answer(&decision, answer) {
+                    eprintln!("pinchd: could not apply {action:?} to {decision}: {e:#}");
+                }
+            });
         }),
     };
     // The menu bar must own the main thread; everything else runs elsewhere.
-    pinch_macos::run(callbacks, move |handle| {
-        let _ = MENU_BAR.set(handle);
-        first_launch_ui.prepare();
-        // First launch from the desktop app: show the popover once so the
-        // onboarding card is seen without a terminal.
-        if pinch_client::onboarding::needed() && !pinch_client::onboarding::detect().is_empty() {
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_secs(1));
-                first_launch_ui.toggle(None);
-            });
+    pinch_macos::run(
+        callbacks,
+        pinch_client::installation::variant().map(str::to_owned),
+        move |handle| {
+            handle.sync_decisions(&engine.snapshot().1, true);
+            let _ = MENU_BAR.set(handle);
+            start_sampler(engine);
+            first_launch_ui.prepare();
+            // First launch from the desktop app: show the popover once so the
+            // onboarding card is seen without a terminal.
+            if pinch_client::onboarding::needed() && !pinch_client::onboarding::detect().is_empty()
+            {
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_secs(1));
+                    first_launch_ui.toggle(None);
+                });
+            }
+        },
+    )
+}
+
+fn start_sampler(engine: Arc<Engine>) {
+    engine.tick();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(2));
+            engine.tick();
         }
-    })
+    });
 }

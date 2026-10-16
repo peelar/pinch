@@ -13,9 +13,55 @@ pinch stop web
 
 A small engine (`pinchd`) runs in the background and starts itself the first
 time you use the CLI. It lives in the menu bar: click the icon for a popover
-with every server, its CPU/memory and logs. When a server has been silent for
-a long time and nothing is connected to it, you get a notification with
-**Kill / Keep / Snooze** buttons.
+with every server, its CPU/memory and logs. After a managed process has been
+quiet for 2 hours, Pinch asks whether to stop it, showing the estimated RAM
+that could be freed. Notifications offer **Stop / Keep running / Snooze 1h**;
+the same suggestions stay in the popover and `pinch inbox`.
+
+Log output, observed TCP connections, process-tree CPU usage of at least 5%,
+and reuse through `pinch ensure` each postpone suggestions for a full quiet
+interval. Connections are sampled every 2 seconds, so very short requests may
+be missed. Keep exempts that process until it is restarted; snooze postpones
+it for an hour. Decisions and answers survive engine updates. Discovered
+listeners never receive automatic stop suggestions.
+
+macOS notification permission is required. If notifications are off, the
+popover links to Notification settings. Suggestions still appear in the inbox.
+RAM estimates use process-tree resident memory and are approximate.
+
+## Test separate installations
+
+Build a named variant to try a branch alongside your normal Pinch installation:
+
+```bash
+PROFILE=debug scripts/bundle.sh --variant proactive
+scripts/install.sh --app "$PWD/dist/Pinch Proactive.app" --no-modify-path
+open "$HOME/Applications/Pinch Proactive.app"
+pinch-proactive ps
+```
+
+The variant is stored inside the signed bundle, so Finder, the CLI symlink,
+and the engine all select the same installation automatically. This creates
+`Pinch Proactive.app`, bundle ID `sh.pinch.Pinch.proactive`, command
+`pinch-proactive`, and state in `~/.pinch-proactive` (registry, socket, logs,
+decisions, and onboarding). The menu bar and popover show the variant name.
+Notification permission is separate for each variant.
+
+Rebuild and reinstall with the same name to update that variant and retain its
+state and managed servers. Use another slug, such as `ui-test`, for another
+installation. Names use lowercase letters, digits, and single hyphens, start
+with a letter, and have at most 32 characters. The installer detects the name
+from the bundle; optional `--variant proactive` verifies the expected name.
+Updating or quitting one installation leaves the others running.
+
+Without `--variant`, the build and installer continue to use `Pinch.app`,
+`pinch`, and `~/.pinch`. `PINCH_HOME` is still an explicit override for CLI and
+engine testing; omit it for normal variant use. Installation updates always
+use the bundle's own default state, ignoring an inherited `PINCH_HOME`.
+Each engine owns its own managed processes; other installations' listeners
+can appear in discovery and require the usual separate confirmation to stop.
+Variants do not isolate TCP ports: give test servers different ports.
+The fast `pnpm dev` preview remains separate per checkout and headless.
 
 ## Install
 
@@ -90,7 +136,10 @@ pinch ps
 ```
 
 To see the stale-server flow quickly, start the engine with a short threshold:
-`PINCH_STALE_AFTER_SECS=30 pinch ps` (the default is 2 hours).
+`PINCH_STALE_AFTER_SECS=30 pinch ps` (the default is 2 hours). This setting is
+read when the engine starts; it does not change an already-running engine.
+After an engine restart, processes without a pending suggestion receive a fresh
+quiet interval because Pinch could not observe activity while it was stopped.
 
 The first time you use pinch (in a terminal, or the first time `Pinch.app` opens) it detects Claude Code / Codex and offers to
 install the pinch skill ([skill/SKILL.md](skill/SKILL.md)); from the app it appears as a card in the popover; rerun any time with `pinch setup`

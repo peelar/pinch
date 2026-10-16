@@ -1,6 +1,6 @@
 //! The engine's thin macOS layer: the menu bar status item (shows how many
 //! decisions are waiting, opens `pinch-ui` on click) and actionable
-//! notifications (Kill / Keep / Snooze) that answer decisions without opening
+//! notifications (Stop / Keep running / Snooze) that answer decisions without opening
 //! the UI. Built on `objc2`.
 //!
 //! AppKit objects may only be touched on the main thread, so the rest of the
@@ -8,10 +8,11 @@
 //! channel, drained by a timer on the main thread) and hears back through the
 //! [`Callbacks`] it registered.
 
+use std::collections::HashSet;
 use std::ptr::NonNull;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Sender};
+use std::sync::{Mutex, OnceLock};
 
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -25,12 +26,14 @@ use objc2_foundation::{
     MainThreadMarker, NSArray, NSBundle, NSObject, NSObjectProtocol, NSSet, NSString, NSTimer,
 };
 use objc2_user_notifications::{
-    UNAuthorizationOptions, UNMutableNotificationContent, UNNotification, UNNotificationAction,
-    UNNotificationActionOptions, UNNotificationCategory, UNNotificationCategoryOptions,
-    UNNotificationDefaultActionIdentifier, UNNotificationPresentationOptions,
-    UNNotificationRequest, UNNotificationResponse, UNNotificationSound, UNUserNotificationCenter,
+    UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent, UNNotification,
+    UNNotificationAction, UNNotificationActionOptions, UNNotificationCategory,
+    UNNotificationCategoryOptions, UNNotificationDefaultActionIdentifier,
+    UNNotificationPresentationOptions, UNNotificationRequest, UNNotificationResponse,
+    UNNotificationSetting, UNNotificationSettings, UNNotificationSound, UNUserNotificationCenter,
     UNUserNotificationCenterDelegate,
 };
+use pinch_proto::{Decision, NotificationStatus};
 
 /// Where the menu bar icon sits, in the top-left-origin coordinates GPUI uses
 /// (points): the popover opens centred under `x_center`, just below `y_bottom`.
@@ -55,36 +58,77 @@ pub struct Callbacks {
 }
 
 enum Command {
-    Badge(usize),
-    Notify {
-        id: String,
-        title: String,
-        body: String,
+    Decisions {
+        decisions: Vec<Decision>,
+        restored: bool,
     },
 }
 
-/// How the rest of the engine talks to the menu bar. Cheap to clone, usable
-/// from any thread.
 #[derive(Clone)]
 pub struct Handle {
     tx: Sender<Command>,
 }
 
 impl Handle {
-    /// Show `n` next to the icon; 0 clears it.
-    pub fn set_badge(&self, n: usize) {
-        let _ = self.tx.send(Command::Badge(n));
-    }
-
-    /// Post a notification with Kill / Keep / Snooze buttons. `id` comes back
-    /// through [`Callbacks::on_action`].
-    pub fn notify(&self, id: &str, title: &str, body: &str) {
-        let _ = self.tx.send(Command::Notify {
-            id: id.into(),
-            title: title.into(),
-            body: body.into(),
+    pub fn sync_decisions(&self, decisions: &[Decision], restored: bool) {
+        let _ = self.tx.send(Command::Decisions {
+            decisions: decisions.to_vec(),
+            restored,
         });
     }
+}
+
+static NOTIFICATION_STATUS: AtomicU8 = AtomicU8::new(0);
+static ACTIVE_DECISIONS: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+pub fn notification_status() -> NotificationStatus {
+    match NOTIFICATION_STATUS.load(Ordering::Relaxed) {
+        1 => NotificationStatus::NotDetermined,
+        2 => NotificationStatus::Disabled,
+        3 => NotificationStatus::Enabled,
+        _ => NotificationStatus::Unavailable,
+    }
+}
+
+fn refresh_notification_status() {
+    let done = RcBlock::new(|settings: NonNull<UNNotificationSettings>| {
+        let settings = unsafe { settings.as_ref() };
+        let status = if settings.authorizationStatus() == UNAuthorizationStatus::NotDetermined {
+            1
+        } else if settings.authorizationStatus() == UNAuthorizationStatus::Authorized
+            && settings.alertSetting() == UNNotificationSetting::Enabled
+        {
+            3
+        } else {
+            2
+        };
+        NOTIFICATION_STATUS.store(status, Ordering::Relaxed);
+    });
+    UNUserNotificationCenter::currentNotificationCenter()
+        .getNotificationSettingsWithCompletionHandler(&done);
+}
+
+fn remove_notifications(ids: &[String]) {
+    let ids: Vec<_> = ids.iter().map(|id| ns(id)).collect();
+    let ids = NSArray::from_retained_slice(&ids);
+    let center = UNUserNotificationCenter::currentNotificationCenter();
+    center.removePendingNotificationRequestsWithIdentifiers(&ids);
+    center.removeDeliveredNotificationsWithIdentifiers(&ids);
+}
+
+fn remove_orphaned_notifications() {
+    let done = RcBlock::new(|notifications: NonNull<NSArray<UNNotification>>| {
+        let notifications = unsafe { notifications.as_ref() };
+        let active = ACTIVE_DECISIONS.lock().unwrap_or_else(|e| e.into_inner());
+        let ids = notifications
+            .iter()
+            .map(|n| n.request().identifier().to_string())
+            .filter(|id| !active.as_ref().is_some_and(|ids| ids.contains(id)))
+            .collect::<Vec<_>>();
+        remove_notifications(&ids);
+    });
+    UNUserNotificationCenter::currentNotificationCenter()
+        .getDeliveredNotificationsWithCompletionHandler(&done);
 }
 
 static CALLBACKS: OnceLock<Callbacks> = OnceLock::new();
@@ -191,12 +235,12 @@ fn setup_notifications() -> Option<Retained<NotificationDelegate>> {
 
     let kill = UNNotificationAction::actionWithIdentifier_title_options(
         &ns("kill"),
-        &ns("Kill"),
+        &ns("Stop"),
         UNNotificationActionOptions::Destructive,
     );
     let keep = UNNotificationAction::actionWithIdentifier_title_options(
         &ns("keep"),
-        &ns("Keep"),
+        &ns("Keep running"),
         UNNotificationActionOptions::empty(),
     );
     let snooze = UNNotificationAction::actionWithIdentifier_title_options(
@@ -217,12 +261,14 @@ fn setup_notifications() -> Option<Retained<NotificationDelegate>> {
             if !granted.as_bool() {
                 eprintln!("pinchd: notification permission was not granted");
             }
+            refresh_notification_status();
         },
     );
     center.requestAuthorizationWithOptions_completionHandler(
         UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound,
         &done,
     );
+    refresh_notification_status();
     Some(delegate)
 }
 
@@ -235,14 +281,23 @@ fn post(id: &str, title: &str, body: &str) {
     content.setSound(Some(&UNNotificationSound::defaultSound()));
     let request =
         UNNotificationRequest::requestWithIdentifier_content_trigger(&ns(id), &content, None);
-    center.addNotificationRequest_withCompletionHandler(&request, None);
+    let done = RcBlock::new(|error: *mut objc2_foundation::NSError| {
+        if let Some(error) = unsafe { error.as_ref() } {
+            eprintln!("pinchd: notification delivery failed: {error}");
+        }
+    });
+    center.addNotificationRequest_withCompletionHandler(&request, Some(&done));
 }
 
-fn set_badge(button: &NSStatusBarButton, n: usize) {
+fn set_badge(button: &NSStatusBarButton, n: usize, variant: Option<&str>) {
     let title = if n == 0 {
         String::new()
     } else {
         format!(" {n}")
+    };
+    let title = match variant {
+        Some(variant) => format!(" {variant}{title}"),
+        None => title,
     };
     button.setTitle(&ns(&title));
 }
@@ -250,7 +305,11 @@ fn set_badge(button: &NSStatusBarButton, n: usize) {
 /// Run the menu bar app on the calling thread, which must be the main thread.
 /// `on_ready` runs on a new thread once the item exists and receives the
 /// [`Handle`] to drive it. Never returns.
-pub fn run(callbacks: Callbacks, on_ready: impl FnOnce(Handle) + Send + 'static) -> ! {
+pub fn run(
+    callbacks: Callbacks,
+    variant: Option<String>,
+    on_ready: impl FnOnce(Handle) + Send + 'static,
+) -> ! {
     let mtm = MainThreadMarker::new().expect("pinch_macos::run must be called on the main thread");
     let _ = CALLBACKS.set(callbacks);
 
@@ -278,17 +337,72 @@ pub fn run(callbacks: Callbacks, on_ready: impl FnOnce(Handle) + Send + 'static)
         button.setAction(Some(sel!(clicked:)));
     }
 
+    set_badge(&button, 0, variant.as_deref());
     let _delegate = setup_notifications();
     let notifications = _delegate.is_some();
 
     let (tx, rx) = mpsc::channel::<Command>();
     let timer_button = button.clone();
+    struct NotificationState {
+        decisions: Vec<Decision>,
+        notified: HashSet<String>,
+        last_settings_check: std::time::Instant,
+    }
+    let state = std::cell::RefCell::new(NotificationState {
+        decisions: Vec::new(),
+        notified: HashSet::new(),
+        last_settings_check: std::time::Instant::now(),
+    });
     let tick = RcBlock::new(move |_timer: NonNull<NSTimer>| {
+        let mut state = state.borrow_mut();
+        let NotificationState {
+            decisions,
+            notified,
+            last_settings_check,
+        } = &mut *state;
         while let Ok(command) = rx.try_recv() {
             match command {
-                Command::Badge(n) => set_badge(&timer_button, n),
-                Command::Notify { id, title, body } if notifications => post(&id, &title, &body),
-                Command::Notify { .. } => {}
+                Command::Decisions {
+                    decisions: next,
+                    restored,
+                } => {
+                    let ids: HashSet<_> = next.iter().map(|d| d.id.clone()).collect();
+                    let removed: Vec<_> = decisions
+                        .iter()
+                        .filter(|d| !ids.contains(&d.id))
+                        .map(|d| d.id.clone())
+                        .collect();
+                    if notifications {
+                        remove_notifications(&removed);
+                    }
+                    notified.retain(|id| ids.contains(id));
+                    *ACTIVE_DECISIONS.lock().unwrap_or_else(|e| e.into_inner()) = Some(ids.clone());
+                    if restored {
+                        notified.extend(ids);
+                        if notifications {
+                            remove_orphaned_notifications();
+                        }
+                    }
+                    *decisions = next;
+                    set_badge(&timer_button, decisions.len(), variant.as_deref());
+                }
+            }
+        }
+        if notifications {
+            if last_settings_check.elapsed().as_secs() >= 10 {
+                refresh_notification_status();
+                *last_settings_check = std::time::Instant::now();
+            }
+            if notification_status() == NotificationStatus::Enabled {
+                for decision in decisions.iter() {
+                    if notified.insert(decision.id.clone()) {
+                        post(
+                            &decision.id,
+                            &format!("Stop {}?", decision.process_name),
+                            &decision.reason,
+                        );
+                    }
+                }
             }
         }
         if OPEN_REQUESTED.swap(false, Ordering::SeqCst)

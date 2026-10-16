@@ -14,7 +14,7 @@ use pinch_proto::{
 
 use crate::resources;
 use crate::theme::Theme;
-use pinch_proto::SystemMetrics;
+use pinch_proto::{NotificationStatus, SystemMetrics};
 
 pub const WIDTH: f32 = 400.0;
 const LOG_HEIGHT: f32 = 520.0;
@@ -24,6 +24,7 @@ const MONO: &str = "Menlo";
 pub struct Snapshot {
     pub loading: bool,
     pub system: SystemMetrics,
+    pub notifications: NotificationStatus,
     pub processes: Vec<ProcessInfo>,
     pub decisions: Vec<Decision>,
     pub error: Option<String>,
@@ -74,14 +75,21 @@ pub fn fetch() -> Snapshot {
 }
 
 fn fetch_engine() -> Snapshot {
-    match request_autostart(&Request::Snapshot) {
+    let response = if std::env::args().any(|arg| arg == "--resident" || arg == "--dev") {
+        request(&Request::Snapshot)
+    } else {
+        request_autostart(&Request::Snapshot)
+    };
+    match response {
         Ok(Response::Snapshot {
             processes,
             decisions,
             system,
+            notifications,
         }) => Snapshot {
             loading: false,
             system,
+            notifications,
             processes,
             decisions,
             error: None,
@@ -115,7 +123,10 @@ pub fn height_for(snapshot: &Snapshot) -> f32 {
     if snapshot.onboarding {
         h += 150.0;
     }
-    h += snapshot.decisions.len() as f32 * 124.0;
+    if snapshot.notifications == NotificationStatus::Disabled {
+        h += 84.0;
+    }
+    h += snapshot.decisions.len() as f32 * 154.0;
     if managed + unmanaged == 0.0 {
         h += 150.0;
     }
@@ -338,7 +349,10 @@ impl Popover {
                 div()
                     .text_size(px(16.0))
                     .font_weight(FontWeight::BOLD)
-                    .child("pinch"),
+                    .child(pinch_client::installation::variant().map_or_else(
+                        || "pinch".to_string(),
+                        |_| pinch_client::installation::display_name(),
+                    )),
             )
             .child(
                 div()
@@ -449,7 +463,7 @@ impl Popover {
                         div()
                             .text_size(px(13.0))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("Still needed?"),
+                            .child(format!("Stop {}?", decision.process_name)),
                     ),
             )
             .child(
@@ -462,8 +476,8 @@ impl Popover {
                 div()
                     .flex()
                     .gap_2()
-                    .child(answer("Kill", DecisionAnswer::Kill, true, cx))
-                    .child(answer("Keep", DecisionAnswer::Keep, false, cx))
+                    .child(answer("Stop", DecisionAnswer::Kill, true, cx))
+                    .child(answer("Keep running", DecisionAnswer::Keep, false, cx))
                     .child(answer("Snooze 1h", DecisionAnswer::Snooze, false, cx)),
             )
     }
@@ -740,6 +754,20 @@ impl Popover {
         }
         if self.snapshot.onboarding {
             body = body.child(self.onboarding_card(theme, cx));
+        }
+        if self.snapshot.notifications == NotificationStatus::Disabled {
+            body = body.child(
+                div().mx_3().mb_2().p_3().rounded_lg().bg(theme.card)
+                    .flex().flex_col().gap_2()
+                    .child(div().text_size(px(12.0)).text_color(theme.muted)
+                        .child("Notifications are off. Stale-process suggestions will appear here."))
+                    .child(button("notification-settings", "Notification settings", false, theme)
+                        .on_click(|_, _, _| {
+                            let _ = std::process::Command::new("open")
+                                .arg("x-apple.systempreferences:com.apple.Notifications-Settings.extension")
+                                .spawn();
+                        })),
+            );
         }
         for decision in &self.snapshot.decisions {
             body = body.child(self.decision_card(decision, theme, cx));

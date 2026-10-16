@@ -1,6 +1,7 @@
 //! Talking to the engine: where its files live, one blocking request per
 //! connection, and starting the engine on demand when nobody is home.
 
+pub mod installation;
 pub mod onboarding;
 
 use std::io::{BufRead, BufReader, Write};
@@ -19,7 +20,8 @@ pub fn home() -> PathBuf {
     if let Some(dir) = std::env::var_os("PINCH_HOME") {
         return PathBuf::from(dir);
     }
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".pinch")
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+        .join(installation::state_directory())
 }
 
 pub fn socket_path() -> PathBuf {
