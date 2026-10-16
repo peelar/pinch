@@ -2,7 +2,7 @@
 
 # pinch
 
-<img width="390" height="628" alt="CleanShot 2026-10-16 at 12 26 15@2x" src="https://github.com/user-attachments/assets/94ee5142-e2ea-4437-b97b-44ca30d5d06f" />
+<img width="391" height="633" alt="CleanShot 2026-10-16 at 12 36 27@2x" src="https://github.com/user-attachments/assets/b895eba0-da5d-45d2-861e-3cf9d5680411" />
 
 **Your agents start things. Pinch keeps count.**
 
