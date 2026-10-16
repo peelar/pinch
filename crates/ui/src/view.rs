@@ -642,20 +642,42 @@ impl Popover {
     }
 
     fn list(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        let managed: Vec<(usize, &ProcessInfo)> = self
+        let mut managed: Vec<(usize, &ProcessInfo)> = self
             .snapshot
             .processes
             .iter()
             .enumerate()
             .filter(|(_, p)| p.origin == Origin::Managed)
             .collect();
-        let unmanaged: Vec<(usize, &ProcessInfo)> = self
+        let mut unmanaged: Vec<(usize, &ProcessInfo)> = self
             .snapshot
             .processes
             .iter()
             .enumerate()
             .filter(|(_, p)| p.origin == Origin::Unmanaged)
             .collect();
+
+        let by_resources = |a: &(usize, &ProcessInfo), b: &(usize, &ProcessInfo)| {
+            let a = a.1;
+            let b = b.1;
+            b.status
+                .is_alive()
+                .cmp(&a.status.is_alive())
+                .then_with(|| {
+                    let a_cpu = a.metrics.as_ref().map_or(0.0, |m| m.cpu_percent);
+                    let b_cpu = b.metrics.as_ref().map_or(0.0, |m| m.cpu_percent);
+                    b_cpu.total_cmp(&a_cpu)
+                })
+                .then_with(|| {
+                    let a_ram = a.metrics.as_ref().map_or(0, |m| m.rss_bytes);
+                    let b_ram = b.metrics.as_ref().map_or(0, |m| m.rss_bytes);
+                    b_ram.cmp(&a_ram)
+                })
+                .then_with(|| a.name.cmp(&b.name))
+                .then_with(|| a.id.0.cmp(&b.id.0))
+        };
+        managed.sort_by(by_resources);
+        unmanaged.sort_by(by_resources);
 
         let mut body = div()
             .id("list")
