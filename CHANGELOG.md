@@ -1,5 +1,11 @@
 # pinch
 
+## 0.2.2
+
+### Patch Changes
+
+- cd18cb8: Keep Cargo.lock synchronized during version bumps and reject stale locks in version checks.
+
 ## 0.2.1
 
 ### Patch Changes
