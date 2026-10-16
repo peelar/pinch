@@ -188,7 +188,10 @@ popover and CLI. Within each popover section, live processes sort by descending
 CPU usage, then descending RSS, with name and ID breaking ties; stopped entries
 come last. The order refreshes with each metrics snapshot. Stopped registered
 processes have a visible × button to clear their registry entry. Registered processes retain direct Stop actions. Discovered listeners require a
-separate confirmation showing PID, command, executable, cwd, and detected app.
+separate confirmation with a fixed action row and a collapsed process-details
+accordion showing command, executable, cwd, and detected app. The process name,
+PID, and warning stay visible; expanded details scroll independently so Cancel
+and Stop remain visible.
 The dedicated RPC rechecks PID/start time and the reviewed identity against the
 live process before sending SIGTERM to that PID alone, with no group signal or
 SIGKILL escalation. Ordinary Stop requests still reject discovered targets. Runtime names and listening ports do not
