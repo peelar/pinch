@@ -14,6 +14,9 @@ impl AssetSource for Assets {
             "runtimes/yarn.svg" => Some(include_bytes!("../assets/runtimes/yarn.svg")),
             "runtimes/bun.svg" => Some(include_bytes!("../assets/runtimes/bun.svg")),
             "runtimes/rust.svg" => Some(include_bytes!("../assets/runtimes/rust.svg")),
+            "runtimes/cloudflared.svg" => {
+                Some(include_bytes!("../assets/runtimes/cloudflared.svg"))
+            }
             _ => None,
         };
         Ok(bytes.map(Cow::Borrowed))
@@ -32,6 +35,7 @@ pub fn runtime(kind: &ProcessKind) -> AnyElement {
         ProcessKind::Yarn => "yarn",
         ProcessKind::Bun => "bun",
         ProcessKind::Cargo => "rust",
+        ProcessKind::Other(name) if name.eq_ignore_ascii_case("cloudflared") => "cloudflared",
         ProcessKind::Other(_) => return gpui::div().w(px(20.)).h(px(20.)).into_any_element(),
     };
     img(SharedString::from(format!("runtimes/{name}.svg")))
