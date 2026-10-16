@@ -27,8 +27,8 @@ impl Theme {
             WindowAppearance::Dark | WindowAppearance::VibrantDark => Self {
                 tint: rgba(0x1c1c1e8c),
                 text: rgb(0xf5f5f7),
-                muted: rgb(0xa1a1a8),
-                faint: rgb(0x6e6e76),
+                muted: rgb(0xc7c7cc),
+                faint: rgb(0xaeaeb5),
                 hover: rgba(0xffffff12),
                 card: rgba(0xffffff0f),
                 tooltip: rgb(0x29292c),
@@ -42,8 +42,8 @@ impl Theme {
             _ => Self {
                 tint: rgba(0xf5f5f78c),
                 text: rgb(0x1d1d1f),
-                muted: rgb(0x6e6e73),
-                faint: rgb(0x9a9aa0),
+                muted: rgb(0x303034),
+                faint: rgb(0x313135),
                 hover: rgba(0x00000010),
                 card: rgba(0xffffff80),
                 tooltip: rgb(0xfafafa),
