@@ -185,5 +185,21 @@ Parent lookup is bounded to 64 hops; reparented processes may have no launcher.
 Runtime icons (Node, Python, npm, pnpm, Yarn, Bun, Cargo) are embedded SVGs
 ported from Zeron’s MIT-licensed file icons, retaining their license. App bundle names are path-derived,
 not verified bundle metadata; processes outside bundles can remain unidentified.
-Discovered IDs include start time as well as PID. Protocol version 4 requires
+Discovered IDs include start time as well as PID. Protocol version 5 requires
 updating the engine and clients together.
+
+### Agent attribution
+
+New `run` and `ensure` RPCs require `AgentMetadata` with a closed `Harness` enum.
+The CLI accepts `--harness` / `PINCH_HARNESS`, optional thread and agent IDs,
+and a Codex thread environment fallback. Branch and worktree are captured at
+start. Both list surfaces use shared grouping keys with full workspace paths
+and IDs. Reuse preserves the original initiator; engine restart preserves the
+serialized attribution. Legacy records deserialize without metadata and display
+as Unattributed; restarting them requires stopping and registering with a harness.
+Discovered listeners retain their separate identity and controls.
+
+Group headers use a compact harness icon with the worktree name and abbreviated
+thread ID on one line. Full harness, workspace path, branch, thread and agent IDs
+are shown on hover. Managed rows omit the workspace/branch already in the group.
+Harness icons are ported from Zeron under its MIT license.

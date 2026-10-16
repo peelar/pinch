@@ -5,7 +5,7 @@ through pinch, so every server is registered by name, port and kind, its logs
 are readable by any agent, and forgotten servers get noticed and turned off.
 
 ```bash
-pinch ensure --name web --wait -- pnpm dev   # start, or reuse the one already running in this repo
+pinch ensure --harness terminal --name web --wait -- pnpm dev   # start, or reuse the one already running in this repo
 pinch ps                                     # what's running, on which port, using how much
 pinch logs web --tail 200 --follow
 pinch stop web
@@ -85,7 +85,7 @@ scripts/bundle.sh                       # builds dist/Pinch.app (use PROFILE=deb
 open dist/Pinch.app                     # menu bar icon appears; allow notifications when asked
 ln -sf "$PWD/dist/Pinch.app/Contents/MacOS/pinch" ~/.local/bin/pinch
 
-cd some-repo && pinch ensure --name web --wait -- pnpm dev
+cd some-repo && pinch ensure --harness terminal --name web --wait -- pnpm dev
 pinch ps
 ```
 
@@ -165,3 +165,15 @@ Versions and changelogs use Changesets. See the
 ## License
 
 [MIT](LICENSE). Third-party dependencies retain their own licenses.
+
+### Agent attribution
+
+`run` and `ensure` require `--harness` or `PINCH_HARNESS`: `claude-code`,
+`codex`, `cursor`, `gemini-cli`, `copilot`, `opencode`, `zeron`, or `terminal`
+(for manual starts). Supply `--thread-id` and `--agent-id` when available, or
+set `PINCH_THREAD_ID` / `PINCH_AGENT_ID`. Codex also reads `CODEX_THREAD_ID`.
+Repository/worktree and branch are captured automatically from the working directory.
+The CLI and app group registered processes by harness, workspace, branch, thread,
+and agent. `ensure` keeps the original starter's attribution when reusing a process.
+Older records remain unattributed; to restart one, stop it and register it again
+with a harness. Discovered listeners keep their separate section.

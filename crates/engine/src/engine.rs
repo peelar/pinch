@@ -289,7 +289,11 @@ impl Engine {
             let idx = find_managed(&inner, target)
                 .ok_or_else(|| anyhow!("no managed process matching '{target}'"))?;
             let entry = &inner.entries[idx];
+            let agent = entry.info.agent.clone().context(
+                "this legacy process has no harness; stop it and use run/ensure with --harness",
+            )?;
             let spawn = Spawn {
+                agent,
                 name: entry.info.name.clone(),
                 command: entry.info.command.clone(),
                 cwd: entry.info.cwd.clone(),
@@ -429,6 +433,7 @@ impl Engine {
 
         let (repo, branch) = find_repo(Path::new(&spawn.cwd));
         let info = ProcessInfo {
+            agent: Some(spawn.agent.clone()),
             id: ProcessId(id.clone()),
             name: spawn.name.clone(),
             kind: ProcessKind::from_exe(&program),
@@ -672,6 +677,7 @@ impl Engine {
                 })
                 .unwrap_or_else(|| kind.label().to_string());
             unmanaged.push(ProcessInfo {
+                agent: None,
                 id: ProcessId(format!("pid:{pid}:{}", proc_.start_time())),
                 name: format!("{label}:{}", ports[0]),
                 kind,

@@ -8,7 +8,9 @@ use gpui::{
     Rgba, ScrollHandle, SharedString, Window, div, prelude::*, px, size,
 };
 use pinch_client::{now_ms, onboarding, request, request_autostart};
-use pinch_proto::{Decision, DecisionAnswer, Origin, ProcessInfo, Request, Response, Status};
+use pinch_proto::{
+    Decision, DecisionAnswer, Origin, ProcessGroup, ProcessInfo, Request, Response, Status,
+};
 
 use crate::resources;
 use crate::theme::Theme;
@@ -118,7 +120,14 @@ pub fn height_for(snapshot: &Snapshot) -> f32 {
         h += 150.0;
     }
     if managed > 0.0 {
-        h += 30.0 + managed * 68.0;
+        let groups = snapshot
+            .processes
+            .iter()
+            .filter(|p| p.origin == Origin::Managed)
+            .map(ProcessInfo::group)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        h += 30.0 + groups as f32 * 32.0 + managed * 68.0;
     }
     if unmanaged > 0.0 {
         h += 34.0 + unmanaged * 68.0;
@@ -483,7 +492,7 @@ impl Popover {
         {
             subtitle.push(format!("via {}", name.to_string_lossy()));
         }
-        if let Some(repo) = p.repo.as_deref().and_then(|r| r.rsplit('/').next()) {
+        if !managed && let Some(repo) = p.repo.as_deref().and_then(|r| r.rsplit('/').next()) {
             subtitle.push(match &p.branch {
                 Some(b) => format!("{repo}@{b}"),
                 None => repo.to_string(),
@@ -752,8 +761,15 @@ impl Popover {
         }
         if !managed.is_empty() {
             body = body.child(section_label("STARTED THROUGH PINCH", theme));
+            let mut groups = std::collections::BTreeMap::<_, Vec<_>>::new();
             for (i, p) in managed {
-                body = body.child(self.process_row(i, p, theme, cx));
+                groups.entry(p.group()).or_default().push((i, p));
+            }
+            for (key, entries) in groups {
+                body = body.child(agent_group_label(&key, theme));
+                for (i, p) in entries {
+                    body = body.child(self.process_row(i, p, theme, cx));
+                }
             }
         }
         if !unmanaged.is_empty() {
@@ -960,7 +976,90 @@ fn dot(color: Rgba) -> impl IntoElement {
     div().w(px(8.0)).h(px(8.0)).rounded_full().bg(color)
 }
 
-fn section_label(text: &'static str, theme: Theme) -> impl IntoElement {
+fn agent_group_label(group: &ProcessGroup, theme: Theme) -> impl IntoElement {
+    let workspace = std::path::Path::new(&group.workspace)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| group.workspace.clone());
+    let details = group.clone();
+    let mut header = div()
+        .id(SharedString::from(group.label()))
+        .px_4()
+        .pt_3()
+        .pb_1()
+        .flex()
+        .items_center()
+        .gap_2()
+        .text_size(px(11.0))
+        .text_color(theme.muted)
+        .child(crate::icons::harness(
+            group.agent.as_ref().map(|a| a.harness),
+            theme.muted,
+        ))
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .font_weight(FontWeight::MEDIUM)
+                .child(workspace),
+        );
+    if let Some(thread) = group.agent.as_ref().and_then(|a| a.thread_id.as_ref()) {
+        let short = if thread.chars().count() > 20 {
+            format!("{}…", thread.chars().take(8).collect::<String>())
+        } else {
+            thread.clone()
+        };
+        header = header
+            .child(div().flex_none().text_color(theme.faint).child("/"))
+            .child(div().min_w_0().truncate().child(short));
+    }
+    header.tooltip(move |_, cx| cx.new(|_| AgentGroupDetails(details.clone())).into())
+}
+
+struct AgentGroupDetails(ProcessGroup);
+
+impl Render for AgentGroupDetails {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::for_appearance(window.appearance());
+        let group = &self.0;
+        let mut lines = vec![group.workspace.clone()];
+        if let Some(branch) = &group.branch {
+            lines.push(format!("Branch: {branch}"));
+        }
+        if let Some(agent) = &group.agent {
+            if let Some(thread) = &agent.thread_id {
+                lines.push(format!("Thread: {thread}"));
+            }
+            if let Some(id) = &agent.agent_id {
+                lines.push(format!("Agent: {id}"));
+            }
+        }
+        div()
+            .p_3()
+            .max_w(px(380.0))
+            .rounded_lg()
+            .bg(theme.tooltip)
+            .border_1()
+            .border_color(theme.border)
+            .shadow_md()
+            .text_size(px(11.0))
+            .text_color(theme.text)
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div().font_weight(FontWeight::SEMIBOLD).child(
+                    group
+                        .agent
+                        .as_ref()
+                        .map_or("Unattributed", |a| a.harness.label()),
+                ),
+            )
+            .children(lines.into_iter().map(|line| div().child(line)))
+    }
+}
+
+fn section_label(text: impl Into<SharedString>, theme: Theme) -> impl IntoElement {
     div()
         .px_4()
         .pt_3()
@@ -968,7 +1067,7 @@ fn section_label(text: &'static str, theme: Theme) -> impl IntoElement {
         .text_size(px(10.0))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme.faint)
-        .child(text)
+        .child(text.into())
 }
 
 fn button(
