@@ -1,7 +1,7 @@
 //! `pinchd`: the always-on engine. Supervises managed processes, samples
 //! metrics, runs the staleness rule, holds pending decisions, and serves
 //! clients over a Unix socket. On macOS it also owns the menu bar item and
-//! notifications. See ARCHITECTURE.md.
+//! notifications. See DEVELOPMENT.md.
 //!
 //! `pinchd --headless` skips the menu bar layer (for tests and servers).
 

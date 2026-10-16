@@ -7,20 +7,9 @@ Please open an issue before starting a pull request. Unsolicited pull requests
 may be closed; publishing the source does not imply a commitment to review them.
 Keep reports focused and remove credentials and sensitive logs.
 
-For local development, use macOS, the Rust toolchain in `rust-toolchain.toml`,
-Node.js 24, and the pnpm version in `package.json`. Node and pnpm are only needed
-for release tooling. Read [ARCHITECTURE.md](ARCHITECTURE.md) for scope and design.
+For setup, previews, required checks, and release tooling, see
+[DEVELOPMENT.md](DEVELOPMENT.md). Follow [CLAUDE.md](CLAUDE.md) for project conventions.
 
-Before submitting changes:
-
-```sh
-pnpm install --frozen-lockfile
-pnpm check:version
-cargo fmt --all -- --check
-cargo clippy --locked --workspace -- -D warnings
-cargo test --locked --workspace
-```
-
-User-visible changes need a changeset: run `pnpm changeset`, select `pinch`,
-choose a patch/minor/major bump, and describe the change for users. Documentation
-and CI-only changes generally do not need one.
+Every PR needs a Changeset for `pinch`, including documentation and tooling
+changes. Run `pnpm changeset`, choose the appropriate bump, and commit the
+generated file. Only the automated `changeset-release/main` version PR is exempt.

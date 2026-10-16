@@ -23,7 +23,8 @@ use objc2_app_kit::{
     NSStatusBar, NSStatusBarButton, NSStatusItem, NSVariableStatusItemLength,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSBundle, NSObject, NSObjectProtocol, NSSet, NSString, NSTimer,
+    MainThreadMarker, NSArray, NSBundle, NSData, NSObject, NSObjectProtocol, NSSet, NSSize,
+    NSString, NSTimer,
 };
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent, UNNotification,
@@ -321,17 +322,14 @@ pub fn run(
         NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
     let target: Retained<ClickTarget> = unsafe { msg_send![ClickTarget::alloc(mtm), init] };
     let button = status_item.button(mtm).expect("status item has a button");
-    match NSImage::imageWithSystemSymbolName_accessibilityDescription(
-        &ns("gauge.with.dots.needle.33percent"),
-        Some(&ns("Pinch")),
-    ) {
-        Some(image) => {
-            image.setTemplate(true);
-            button.setImage(Some(&image));
-            button.setImagePosition(NSCellImagePosition::ImageLeft);
-        }
-        None => button.setTitle(&ns("◐")),
+    let data = NSData::with_bytes(include_bytes!("../../../assets/brand/menu-bar.png"));
+    if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+        image.setSize(NSSize::new(24.0, 16.0));
+        image.setTemplate(true);
+        button.setImage(Some(&image));
+        button.setImagePosition(NSCellImagePosition::ImageLeft);
     }
+    button.setToolTip(Some(&ns("Pinch — local servers under control")));
     unsafe {
         button.setTarget(Some(&target));
         button.setAction(Some(sel!(clicked:)));
@@ -398,7 +396,7 @@ pub fn run(
                     if notified.insert(decision.id.clone()) {
                         post(
                             &decision.id,
-                            &format!("Stop {}?", decision.process_name),
+                            &format!("Still need {}?", decision.process_name),
                             &decision.reason,
                         );
                     }

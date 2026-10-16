@@ -119,7 +119,7 @@ pub fn height_for(snapshot: &Snapshot) -> f32 {
         .iter()
         .filter(|p| p.origin == Origin::Unmanaged)
         .count() as f32;
-    let mut h = 52.0 + 40.0 + 12.0; // header + footer + list margin
+    let mut h = 66.0 + 40.0 + 12.0; // header + footer + list margin
     if snapshot.onboarding {
         h += 150.0;
     }
@@ -254,11 +254,13 @@ impl Popover {
 
     /// Send a request in the background, then refresh straight away.
     fn send(&mut self, req: Request, window: &mut Window, cx: &mut Context<Self>) {
+        let clearing = matches!(&req, Request::Clear { .. });
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { request(&req) })
                 .await;
+            let cleared = clearing && matches!(&result, Ok(Response::Ok));
             let mut snapshot = cx.background_executor().spawn(async { fetch() }).await;
             match result {
                 Ok(Response::Error { message }) => snapshot.error = Some(message),
@@ -266,7 +268,10 @@ impl Popover {
                 _ => {}
             }
             let _ = this.update_in(cx, |this, window, cx| {
-                this.apply(snapshot, None, window, cx)
+                this.apply(snapshot, None, window, cx);
+                if cleared {
+                    this.back(window, cx);
+                }
             });
         })
         .detach();
@@ -319,7 +324,8 @@ impl Popover {
 
     // ---- pieces -----------------------------------------------------------
 
-    fn header(&self, theme: Theme) -> impl IntoElement {
+    fn header(&self) -> impl IntoElement {
+        let theme = Theme::for_appearance(gpui::WindowAppearance::Dark);
         let live: Vec<&ProcessInfo> = self
             .snapshot
             .processes
@@ -341,26 +347,59 @@ impl Popover {
         div()
             .flex()
             .items_center()
-            .justify_between()
+            .gap_2()
             .px_4()
-            .pt_4()
-            .pb_2()
+            .py_3()
+            .bg(theme.tint)
+            .border_b_2()
+            .border_color(theme.accent)
             .child(
                 div()
-                    .text_size(px(16.0))
-                    .font_weight(FontWeight::BOLD)
-                    .child(pinch_client::installation::variant().map_or_else(
-                        || "pinch".to_string(),
-                        |_| pinch_client::installation::display_name(),
-                    )),
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(40.))
+                    .h(px(40.))
+                    .flex_none()
+                    .rounded_md()
+                    .bg(theme.accent)
+                    .child(
+                        gpui::svg()
+                            .path("brand/daemon.svg")
+                            .text_color(theme.on_accent)
+                            .w(px(32.))
+                            .h(px(32.)),
+                    ),
             )
             .child(
                 div()
-                    .text_size(px(12.0))
-                    .text_color(theme.muted)
-                    .font_family(MONO)
-                    .child(summary),
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        gpui::svg()
+                            .path("brand/wordmark.svg")
+                            .w(px(70.))
+                            .h(px(19.))
+                            .text_color(theme.accent),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .line_height(px(17.))
+                            .text_color(theme.muted)
+                            .font_family(MONO)
+                            .child(summary),
+                    ),
             )
+            .when_some(pinch_client::installation::variant(), |header, variant| {
+                header.child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(theme.muted)
+                        .child(variant),
+                )
+            })
     }
 
     fn onboarding_card(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -385,7 +424,7 @@ impl Popover {
                 div()
                     .text_size(px(13.0))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child("Teach your agents about pinch"),
+                    .child("Your agents start things. Pinch keeps count."),
             )
             .child(
                 div()
@@ -400,7 +439,8 @@ impl Popover {
                     .flex()
                     .gap_2()
                     .child(
-                        button("onboard-install", "Install skill", false, theme).on_click(
+                        button("onboard-install", "Install skill", false, theme)
+                            .bg(theme.accent).text_color(theme.on_accent).on_click(
                             cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.finish_onboarding(true, window, cx)
                             }),
@@ -463,7 +503,7 @@ impl Popover {
                         div()
                             .text_size(px(13.0))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("Stop {}?", decision.process_name)),
+                            .child(format!("Still need {}?", decision.process_name)),
                     ),
             )
             .child(
@@ -794,23 +834,31 @@ impl Popover {
                     .items_center()
                     .gap_1()
                     .py_8()
-                    .child(div().text_size(px(28.0)).child("🌙"))
+                    .child(
+                        div().text_size(px(28.0)).child(
+                            gpui::svg()
+                                .path("brand/daemon.svg")
+                                .w(px(48.))
+                                .h(px(48.))
+                                .text_color(theme.muted),
+                        ),
+                    )
                     .child(
                         div()
                             .text_size(px(13.0))
                             .font_weight(FontWeight::MEDIUM)
-                            .child("Nothing running"),
+                            .child("Nothing on the clock."),
                     )
                     .child(
                         div()
                             .text_size(px(12.0))
                             .text_color(theme.muted)
-                            .child("Servers agents start with pinch show up here."),
+                            .child("Start a server through Pinch to track it here."),
                     ),
             );
         }
         if !managed.is_empty() {
-            body = body.child(section_label("STARTED THROUGH PINCH", theme));
+            body = body.child(section_label("MANAGED", theme));
             let mut groups = std::collections::BTreeMap::<_, Vec<_>>::new();
             for (i, p) in managed {
                 groups.entry(p.group()).or_default().push((i, p));
@@ -823,7 +871,7 @@ impl Popover {
             }
         }
         if !unmanaged.is_empty() {
-            body = body.child(section_label("DISCOVERED", theme));
+            body = body.child(section_label("RUNNING OUTSIDE PINCH", theme));
             for (i, p) in unmanaged {
                 body = body.child(self.process_row(i, p, theme, cx));
             }
@@ -851,7 +899,7 @@ impl Popover {
         let stop_name = name.to_string();
         let restart_name = name.to_string();
 
-        let mut actions = div().flex().gap_2();
+        let mut actions = div().flex().flex_none().gap_2();
         if alive {
             actions = actions.child(
                 button("log-stop", "Stop", true, theme).on_click(cx.listener(
@@ -866,6 +914,20 @@ impl Popover {
                     },
                 )),
             );
+        }
+        if let Some(process) = process.filter(|p| !p.status.is_alive()) {
+            let target = process.id.0.clone();
+            actions = actions.child(button("log-remove", "Remove", true, theme).on_click(
+                cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.send(
+                        Request::Clear {
+                            name: target.clone(),
+                        },
+                        window,
+                        cx,
+                    );
+                }),
+            ));
         }
         actions = actions.child(button("log-restart", "Restart", false, theme).on_click(
             cx.listener(move |this, _: &ClickEvent, window, cx| {
@@ -913,6 +975,8 @@ impl Popover {
                     .child(
                         div()
                             .id("back")
+                            .flex_1()
+                            .min_w_0()
                             .flex()
                             .items_center()
                             .gap_2()
@@ -924,6 +988,8 @@ impl Popover {
                             .child(div().text_color(theme.muted).child("‹"))
                             .child(
                                 div()
+                                    .min_w_0()
+                                    .truncate()
                                     .text_size(px(14.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(name.to_string()),
@@ -941,6 +1007,16 @@ impl Popover {
                     )
                     .child(actions),
             )
+            .when_some(self.snapshot.error.clone(), |view, error| {
+                view.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_size(px(12.))
+                        .text_color(theme.danger)
+                        .child(error),
+                )
+            })
             .child(
                 div()
                     .id("logs")
@@ -963,8 +1039,10 @@ impl Popover {
             .into_any_element()
     }
 
-    fn footer(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::for_appearance(gpui::WindowAppearance::Dark);
         div()
+            .bg(theme.tint)
             .flex()
             .items_center()
             .justify_between()
@@ -998,7 +1076,7 @@ impl Render for Popover {
                 .flex_col()
                 .flex_1()
                 .min_h_0()
-                .child(self.header(theme))
+                .child(self.header())
                 .child(self.list(theme, cx))
                 .into_any_element(),
             Screen::Logs { name, text } => self.logs_view(name, text, theme, cx),
@@ -1016,7 +1094,7 @@ impl Render for Popover {
             .text_color(theme.text)
             .font_family(".SystemUIFont")
             .child(content)
-            .child(self.footer(theme, cx))
+            .child(self.footer(cx))
     }
 }
 
@@ -1111,6 +1189,7 @@ impl Render for AgentGroupDetails {
 
 fn section_label(text: impl Into<SharedString>, theme: Theme) -> impl IntoElement {
     div()
+        .font_family(MONO)
         .px_4()
         .pt_3()
         .pb_1()

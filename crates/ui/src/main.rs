@@ -1,6 +1,6 @@
 //! `pinch-ui`: the GPUI desktop app, prewarmed by the engine.
 //! The runtime stays ready between menu bar clicks.
-//! See ARCHITECTURE.md.
+//! See DEVELOPMENT.md.
 
 mod icons;
 mod resources;

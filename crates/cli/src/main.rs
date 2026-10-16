@@ -220,7 +220,7 @@ fn run() -> Result<()> {
                 }));
             } else {
                 let verb = if already_running {
-                    "already running"
+                    "already running — one is enough"
                 } else {
                     "started"
                 };
@@ -329,7 +329,7 @@ fn run() -> Result<()> {
             if json {
                 print_json(&decisions);
             } else if decisions.is_empty() {
-                println!("nothing needs your attention");
+                println!("All quiet. Nothing needs your attention.");
             } else {
                 for d in decisions {
                     println!("{}  {}", d.id, d.reason);
