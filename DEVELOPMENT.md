@@ -126,7 +126,7 @@ Public release packaging uses the default `dist/Pinch.app`.
 | --- | --- |
 | `crates/proto` | Versioned newline-delimited JSON RPC and shared types |
 | `crates/client` | Client requests, installation identity, engine startup, onboarding |
-| `crates/engine` | Process supervision, metrics, discovery, decisions, persistence |
+| `crates/engine` | Engine library plus the `pinchd` composition binary |
 | `crates/macos` | Native menu bar and actionable notifications |
 | `crates/cli` | Agent and terminal commands |
 | `crates/ui` | GPUI process list and log detail view |
@@ -142,6 +142,41 @@ The engine prewarms a resident UI and forwards menu-bar clicks over stdin. The
 popover reads a cached snapshot and refreshes it while open. The log view strips
 ANSI sequences and is not virtualized. The engine starts on demand; a launchd
 agent and automatic updates are not implemented.
+
+### Engine and desktop boundaries
+
+The engine library owns supervision, metrics, decisions, persistence, and Unix
+socket RPC. `EngineRuntime` owns the RPC executor; it must remain alive for the
+whole daemon lifetime. The `pinchd` binary selects headless operation or the
+macOS shell in `crates/engine/src/desktop/`. That shell owns menu-bar handles,
+notification actions, UI launching, and window anchor coordinates. Native types
+must not enter the library or shared protocol.
+
+The optional, macOS-targeted `desktop` feature is enabled by default. Building
+`pinch-engine` and `pinch-cli` with `--no-default-features` excludes the desktop
+shell; the daemon then runs headless even without `--headless`. Normal builds
+continue to support runtime `--headless`. This is a dependency boundary, not a
+Linux release or a supported Linux build.
+
+RPC receives notification status through a supplied reader; headless mode returns
+`Unavailable`. Engine decision callbacks only enqueue work because they execute
+under the registry lock. The desktop shell synchronizes restored decisions with
+banner suppression before starting sampling, then forwards subsequent changes.
+Notification actions revalidate through the engine away from the native UI thread.
+
+Socket inspection commands, executable paths, and parsing stay in
+`crates/engine/src/discovery/`. The engine consumes listeners and connected ports.
+The current backend remains macOS's bundled `lsof`; process supervision and
+termination semantics are unchanged. Installation variant metadata remains owned
+by `pinch-client::installation`, including its existing app-bundle reader.
+
+`python3 scripts/check_architecture.py` enforces source ownership and checks the
+headless CLI/engine dependency graph, including indirect dependencies, for desktop
+packages. Native metrics dependencies used by `sysinfo` are allowed. CI also
+compiles the CLI and engine with desktop features disabled. Source checks are
+conservative text checks, including feature-gated code; keep native references
+inside the owning module. Intentional ownership changes require corresponding
+updates to checks and agent instructions, with a review explanation.
 
 ### Process identity
 
@@ -192,6 +227,8 @@ copy can be dry; action labels and errors must remain literal.
 ## Checks
 
 ```sh
+python3 scripts/check_architecture.py
+cargo check -p pinch-engine -p pinch-cli --no-default-features --locked
 cargo fmt --all -- --check
 cargo clippy --workspace --locked
 cargo test --workspace --locked

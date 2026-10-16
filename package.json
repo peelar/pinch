@@ -9,6 +9,7 @@
     "dev": "python3 scripts/dev.py",
     "changeset": "changeset",
     "version": "changeset version && node scripts/sync-version.mjs",
+    "check:architecture": "python3 scripts/check_architecture.py",
     "check:version": "node scripts/sync-version.mjs --check"
   },
   "devDependencies": {

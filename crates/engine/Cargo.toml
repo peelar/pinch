@@ -9,10 +9,16 @@ publish.workspace = true
 name = "pinchd"
 path = "src/main.rs"
 
+[features]
+default = ["desktop"]
+desktop = ["dep:pinch-macos"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+pinch-macos = { workspace = true, optional = true }
+
 [dependencies]
 pinch-proto.workspace = true
 pinch-client.workspace = true
-pinch-macos.workspace = true
 anyhow.workspace = true
 libc.workspace = true
 serde.workspace = true

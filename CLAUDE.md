@@ -31,3 +31,18 @@ workflows. Keep it current when those change.
 - Stop a watcher you started when verification is complete unless the user wants
   it left running. Ctrl-C cleans up the preview UI and engine; managed processes
   survive, so stop any test processes you started through the development CLI.
+
+## Engine and desktop boundaries
+
+Follow the ownership rules in [DEVELOPMENT.md](DEVELOPMENT.md#engine-and-desktop-boundaries).
+Keep desktop/native imports in `crates/engine/src/desktop/`; the engine library
+and RPC server must not depend on the desktop shell. Socket inspection commands
+and parsing belong in `crates/engine/src/discovery/`. Decision callbacks run
+under the registry lock: enqueue work, never block or call back into the engine.
+Preserve restored-decision synchronization before starting the sampler.
+
+Run `python3 scripts/check_architecture.py` and
+`cargo check -p pinch-engine -p pinch-cli --no-default-features --locked` with the
+normal checks. Do not bypass these checks with allowlists or feature flags.
+If ownership changes intentionally, update the checks and these rules together
+and explain the change. This separation does not imply Linux support.
