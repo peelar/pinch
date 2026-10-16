@@ -25,6 +25,10 @@ jobs:
         run: cargo clippy --workspace --locked
       - name: Tests
         run: cargo test --workspace --locked
+      - name: Build integration-test binaries
+        run: cargo build --workspace --locked
+      - name: Integration tests
+        run: python3 -m unittest discover -s scripts/tests -v
       - name: Check release versions
         run: node scripts/sync-version.mjs --check
       - name: Check shell scripts

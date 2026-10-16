@@ -76,6 +76,7 @@ fn dispatch(engine: &Arc<Engine>, request: Request) -> Response {
                     processes,
                     decisions,
                     system,
+                    notifications: pinch_macos::notification_status(),
                 }
             }
             Request::Stop { name } => Response::Process {
@@ -95,6 +96,7 @@ fn dispatch(engine: &Arc<Engine>, request: Request) -> Response {
                 text: engine.logs(&name, tail.unwrap_or(200))?,
             },
             Request::Answer { decision, answer } => {
+                engine.tick();
                 engine.answer(&decision, answer)?;
                 Response::Ok
             }

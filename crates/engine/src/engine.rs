@@ -45,9 +45,10 @@ impl Config {
 
 /// Callbacks into the macOS layer. They are invoked while the registry lock
 /// is held, so they must only enqueue work.
+type DecisionsChanged = Box<dyn Fn(&[Decision]) + Send + Sync>;
+
 pub struct Hooks {
-    pub decision_created: Box<dyn Fn(&Decision) + Send + Sync>,
-    pub attention_changed: Box<dyn Fn(usize) + Send + Sync>,
+    pub decisions_changed: DecisionsChanged,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -57,6 +58,10 @@ struct Entry {
     start_time_s: u64,
     kept: bool,
     snoozed_until_ms: u64,
+    #[serde(default)]
+    last_activity_ms: u64,
+    #[serde(default)]
+    pending_decision: Option<Decision>,
     /// Not persisted: environments hold secrets.
     #[serde(skip)]
     env: BTreeMap<String, String>,
@@ -68,9 +73,11 @@ struct Inner {
     unmanaged: Vec<ProcessInfo>,
     sys: System,
     system_metrics: SystemMetrics,
+    cpu_totals: HashMap<u32, u64>,
     system_sampled_at: Option<Instant>,
     counter: u64,
-    last_attention: usize,
+    last_decisions: Vec<String>,
+    last_activity_saved_ms: u64,
 }
 
 pub struct Engine {
@@ -116,21 +123,39 @@ impl Engine {
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
+        let now = now_ms();
         for entry in &mut entries {
             if entry.info.status.is_alive() && !is_same_process(&sys, entry) {
                 entry.info.status = Status::Exited { code: None };
             }
+            if entry.pending_decision.is_none() {
+                entry.last_activity_ms = now;
+            }
         }
+        let decisions: Vec<Decision> = entries
+            .iter_mut()
+            .filter_map(|entry| {
+                let decision = entry.pending_decision.take()?;
+                (entry.info.origin == Origin::Managed
+                    && entry.info.status.is_alive()
+                    && !entry.kept
+                    && now >= entry.snoozed_until_ms
+                    && decision.process == entry.info.id)
+                    .then_some(decision)
+            })
+            .collect();
 
         let mut inner = Inner {
             entries,
-            decisions: Vec::new(),
+            last_decisions: decisions.iter().map(|d| d.id.clone()).collect(),
+            decisions,
             unmanaged: Vec::new(),
             sys,
             system_metrics: SystemMetrics::default(),
+            cpu_totals: HashMap::new(),
             system_sampled_at: None,
             counter: 0,
-            last_attention: 0,
+            last_activity_saved_ms: now,
         };
         refresh_system_metrics(&mut inner);
         let engine = Arc::new(Self {
@@ -153,22 +178,30 @@ impl Engine {
     pub fn ensure(self: &Arc<Self>, spawn: Spawn) -> Result<(ProcessInfo, bool)> {
         let mut inner = self.lock();
         let key = repo_key(&spawn.cwd);
-        let existing = inner.entries.iter().find(|e| {
+        let existing = inner.entries.iter().position(|e| {
             e.info.status.is_alive()
                 && repo_key_of(&e.info) == key
                 && (e.info.name == spawn.name || e.info.command == spawn.command)
         });
-        if let Some(entry) = existing {
+        if let Some(idx) = existing {
+            let entry = &mut inner.entries[idx];
             if entry.info.command != spawn.command {
                 bail!(
                     "'{}' is already running in this repo with a different command ({}); \
-                     use `pinch restart {}` or pick another name",
+                     use `{} restart {}` or pick another name",
                     entry.info.name,
                     entry.info.command.join(" "),
+                    pinch_client::installation::cli_name(),
                     entry.info.name
                 );
             }
-            return Ok((entry.info.clone(), true));
+            entry.last_activity_ms = now_ms();
+            entry.info.status = Status::Running;
+            let info = entry.info.clone();
+            drop_decisions_for(&mut inner, &info.id);
+            sync_attention(&self.hooks, &mut inner);
+            save(&inner);
+            return Ok((info, true));
         }
         let info = self.spawn_locked(&mut inner, spawn)?;
         Ok((info, false))
@@ -354,10 +387,24 @@ impl Engine {
             .position(|e| e.info.id == decision.process);
         match (answer, idx) {
             (DecisionAnswer::Kill, Some(idx)) => {
-                if let Some(pid) = inner.entries[idx].info.pid {
-                    terminate_group(pid);
+                let pid = inner.entries[idx].info.pid.context("process has no PID")?;
+                inner.sys.refresh_processes_specifics(
+                    ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+                    true,
+                    refresh_kind(),
+                );
+                if inner.entries[idx].info.origin != Origin::Managed
+                    || !is_same_process(&inner.sys, &inner.entries[idx])
+                {
+                    drop_decisions_for(&mut inner, &decision.process);
+                    sync_attention(&self.hooks, &mut inner);
+                    save(&inner);
+                    bail!("process identity changed; the stale suggestion was dismissed");
                 }
+                terminate_group(pid);
                 inner.entries[idx].info.status = Status::Exited { code: None };
+                inner.entries[idx].info.metrics = None;
+                inner.entries[idx].info.ports.clear();
             }
             (DecisionAnswer::Keep, Some(idx)) => {
                 inner.entries[idx].kept = true;
@@ -463,6 +510,8 @@ impl Engine {
             start_time_s,
             kept: false,
             snoozed_until_ms: 0,
+            last_activity_ms: now_ms(),
+            pending_decision: None,
             env: spawn.env,
         });
         save(inner);
@@ -505,10 +554,28 @@ impl Engine {
         inner
             .sys
             .refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind());
+        let cpu_totals: HashMap<u32, u64> = inner
+            .sys
+            .processes()
+            .iter()
+            .map(|(pid, process)| (pid.as_u32(), process.accumulated_cpu_time()))
+            .collect();
+        let cpu_advanced: HashSet<u32> = cpu_totals
+            .iter()
+            .filter(|(pid, total)| {
+                inner
+                    .cpu_totals
+                    .get(pid)
+                    .is_some_and(|previous| *total > previous)
+            })
+            .map(|(pid, _)| *pid)
+            .collect();
+        inner.cpu_totals = cpu_totals;
         let children = children_map(&inner.sys);
         let now = now_ms();
         let mut managed_pids: HashSet<u32> = HashSet::new();
         let mut changed = false;
+        let mut activity_changed = false;
 
         for i in 0..inner.entries.len() {
             if !inner.entries[i].info.status.is_alive() {
@@ -530,7 +597,7 @@ impl Engine {
             let tree = descendants(&children, root);
             managed_pids.extend(&tree);
 
-            let (cpu, rss) = tree_usage(&inner.sys, &tree);
+            let (cpu, rss) = tree_usage(&inner.sys, &tree, &cpu_advanced);
             let mut ports: Vec<u16> = listeners
                 .iter()
                 .filter(|(pid, _)| tree.contains(pid))
@@ -555,18 +622,30 @@ impl Engine {
                 .map(|d| d.as_millis() as u64);
         }
 
-        // Staleness: silent for too long AND nobody connected to its ports.
+        // Recent use holds off suggestions even after a connection closes.
+        for entry in &mut inner.entries {
+            if entry.info.status.is_alive()
+                && (entry.info.ports.iter().any(|p| connected_ports.contains(p))
+                    || entry.info.metrics.is_some_and(|m| m.cpu_percent >= 5.0))
+            {
+                entry.last_activity_ms = now;
+                activity_changed = true;
+            }
+        }
+
+        // Require a full quiet interval across output, connections, CPU and ensure.
         let stale_after_ms = self.cfg.stale_after.as_millis() as u64;
         for i in 0..inner.entries.len() {
             let entry = &inner.entries[i];
-            if !entry.info.status.is_alive() {
+            if !entry.info.status.is_alive() || entry.info.origin != Origin::Managed {
                 continue;
             }
             let last_activity = entry
                 .info
                 .last_output_ms
                 .unwrap_or(0)
-                .max(entry.info.started_at_ms);
+                .max(entry.info.started_at_ms)
+                .max(entry.last_activity_ms);
             let silent_ms = now.saturating_sub(last_activity);
             let connected = entry.info.ports.iter().any(|p| connected_ports.contains(p));
             let suppressed = entry.kept || now < entry.snoozed_until_ms;
@@ -588,15 +667,14 @@ impl Engine {
                     process: id,
                     process_name: name.clone(),
                     reason: format!(
-                        "{name}{port} has produced no output for {} and nothing is connected to it. \
-                         It may be stale.",
-                        human_duration(silent_ms)
+                        "{name}{port}: no activity observed for {}. {}",
+                        human_duration(silent_ms),
+                        memory_estimate(entry.info.metrics)
                     ),
                     created_at_ms: now,
                 };
                 inner.counter = seq;
                 inner.entries[i].info.status = Status::Stale;
-                (self.hooks.decision_created)(&decision);
                 inner.decisions.push(decision);
                 changed = true;
             } else if !stale && has_decision {
@@ -648,7 +726,7 @@ impl Engine {
             ports.sort_unstable();
             ports.dedup();
             let tree = descendants(&children, pid);
-            let (cpu, rss) = tree_usage(&inner.sys, &tree);
+            let (cpu, rss) = tree_usage(&inner.sys, &tree, &cpu_advanced);
             let cwd = proc_
                 .cwd()
                 .map(|p| p.to_string_lossy().into_owned())
@@ -706,13 +784,26 @@ impl Engine {
         inner.unmanaged = unmanaged;
 
         sync_attention(&self.hooks, &mut inner);
-        if changed {
+        if changed
+            || (activity_changed && now.saturating_sub(inner.last_activity_saved_ms) >= 30_000)
+        {
+            inner.last_activity_saved_ms = now;
             save(&inner);
         }
     }
 }
 
 // ---- helpers --------------------------------------------------------------
+
+fn memory_estimate(metrics: Option<Metrics>) -> String {
+    match metrics {
+        Some(m) if m.rss_bytes > 0 => format!(
+            "About {:.0} MB RAM in its process tree could be freed by stopping it.",
+            m.rss_bytes as f64 / 1_048_576.0
+        ),
+        _ => "Stop it to release its resources?".into(),
+    }
+}
 
 fn state_path() -> PathBuf {
     home().join("state.json")
@@ -721,7 +812,15 @@ fn state_path() -> PathBuf {
 fn save(inner: &Inner) {
     let path = state_path();
     let tmp = path.with_extension("json.tmp");
-    if let Ok(bytes) = serde_json::to_vec_pretty(&inner.entries)
+    let mut entries = inner.entries.clone();
+    for entry in &mut entries {
+        entry.pending_decision = inner
+            .decisions
+            .iter()
+            .find(|d| d.process == entry.info.id)
+            .cloned();
+    }
+    if let Ok(bytes) = serde_json::to_vec_pretty(&entries)
         && fs::write(&tmp, bytes).is_ok()
     {
         let _ = fs::rename(&tmp, &path);
@@ -729,10 +828,10 @@ fn save(inner: &Inner) {
 }
 
 fn sync_attention(hooks: &Hooks, inner: &mut Inner) {
-    let n = inner.decisions.len();
-    if n != inner.last_attention {
-        inner.last_attention = n;
-        (hooks.attention_changed)(n);
+    let ids: Vec<String> = inner.decisions.iter().map(|d| d.id.clone()).collect();
+    if ids != inner.last_decisions {
+        inner.last_decisions = ids;
+        (hooks.decisions_changed)(&inner.decisions);
     }
 }
 
@@ -853,11 +952,18 @@ fn descendants(children: &HashMap<u32, Vec<u32>>, root: u32) -> HashSet<u32> {
     seen
 }
 
-fn tree_usage(sys: &System, tree: &HashSet<u32>) -> (f32, u64) {
+fn tree_usage(sys: &System, tree: &HashSet<u32>, cpu_advanced: &HashSet<u32>) -> (f32, u64) {
     tree.iter()
         .filter_map(|pid| sys.process(Pid::from_u32(*pid)))
         .fold((0.0, 0), |(cpu, rss), p| {
-            (cpu + p.cpu_usage(), rss + p.memory())
+            (
+                cpu + if cpu_advanced.contains(&p.pid().as_u32()) {
+                    p.cpu_usage()
+                } else {
+                    0.0
+                },
+                rss + p.memory(),
+            )
         })
 }
 
@@ -979,16 +1085,17 @@ mod identity_tests {
                 unmanaged: vec![info],
                 sys: System::new(),
                 system_metrics: SystemMetrics::default(),
+                cpu_totals: HashMap::new(),
                 system_sampled_at: None,
                 counter: 0,
-                last_attention: 0,
+                last_decisions: Vec::new(),
+                last_activity_saved_ms: 0,
             }),
             cfg: Config {
                 stale_after: Duration::from_secs(3600),
             },
             hooks: Hooks {
-                decision_created: Box::new(|_| {}),
-                attention_changed: Box::new(|_| {}),
+                decisions_changed: Box::new(|_| {}),
             },
         };
         for target in ["node:3000", "pid:999999:123", "3000"] {

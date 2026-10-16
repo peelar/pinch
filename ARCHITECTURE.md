@@ -12,7 +12,7 @@ The name comes from *pinching pennies*, the English cousin of the Polish
 ## Shape
 
 ```
-Pinch.app (signed bundle, one install)
+Pinch.app (signed bundle; optional named variants)
 ├── pinchd    engine: always running, small (launchd agent, auto-spawned by the CLI)
 │   ├── supervises managed processes via per-process shims
 │   ├── samples CPU/mem, discovers unmanaged listeners
@@ -38,7 +38,8 @@ Pinch.app (signed bundle, one install)
   its window while retaining the runtime. Opening uses a cached snapshot and
   refreshes in the background. This spends idle UI memory (roughly 200 MB) to
   avoid process and renderer startup on each click. The UI exits when the
-  engine closes its stdin.
+  engine closes its stdin. Resident and watcher-owned UIs never autostart the
+  engine while polling, so quitting or updating cannot resurrect it.
 - **Each process gets its own shim.** A shim holds the process's PTY, writes its log
   file, and records its exit code. The engine reconnects to shims on start, so
   restarting or upgrading the engine never kills a dev server.
@@ -120,8 +121,22 @@ Built, and exercised end to end (CLI + engine, with real servers):
 - `stop` signals the whole process group (SIGTERM, SIGKILL after 5 s).
 - Metrics (CPU, RSS summed over the process tree), port detection, and
   "found running" discovery of servers started outside pinch.
-- Staleness rule (silent too long and nothing connected) producing decisions
-  with Kill / Keep / Snooze; `PINCH_STALE_AFTER_SECS` overrides the 2 h default.
+- Managed-only staleness suggestions require a quiet interval since the latest
+  log output, observed connection, CPU sample >=5% across the tree, or `ensure`
+  reuse. `PINCH_STALE_AFTER_SECS` overrides the 2 h default. Two-second connection
+  sampling can miss brief requests. CPU samples count only when accumulated CPU
+  time advances, so a cached nonzero percentage cannot keep an idle process busy.
+  Processes without a pending decision receive
+  a fresh observation interval after engine startup.
+- Pending decisions persist in `state.json`, with approximate process-tree RSS
+  savings and Stop / Keep running / Snooze 1h actions. Keep lasts until process
+  restart; snooze and pending decision IDs survive engine restart. Decisions
+  that cease to be relevant are removed from the inbox and Notification Center.
+  Restored decisions do not produce another banner on engine restart.
+- Notification authorization/alert status is sampled from macOS every 10 seconds
+  and exposed in snapshots; the popover links to Settings when alerts are off.
+  GUI sampling starts after the menu bar handle exists, so first-tick decisions
+  reach notifications. Headless engines keep decisions available through RPC.
 - Menu bar item with a pending-decisions badge, actionable notifications, and a
   GPUI popover (list, decision cards, log view) that opens under the icon.
 - `pinch setup` (also offered once on first interactive use) detects Claude Code and
@@ -205,3 +220,27 @@ Group headers use a compact harness icon with the worktree name and abbreviated
 thread ID on one line. Full harness, workspace path, branch, thread and agent IDs
 are shown on hover. Managed rows omit the workspace/branch already in the group.
 Harness icons are ported from Zeron under its MIT license.
+
+### Named installations
+
+`scripts/bundle.sh --variant <slug>` emits `dist/Pinch <Title>.app` with a
+unique `sh.pinch.Pinch.<slug>` bundle ID and signed
+`Contents/Resources/pinch-variant` metadata. The shared client resolves that
+metadata from the canonical executable path once per process. CLI symlinks,
+Finder launch, engine autostart, and the resident UI therefore agree on
+`~/.pinch-<slug>` without exported environment variables. Invalid metadata
+fails rather than silently connecting to the main installation.
+
+The local installer reads and validates that identity before choosing the
+app destination and `pinch-<slug>` CLI symlink. It checks an existing app's
+identity, ignores inherited `PINCH_HOME` while quitting only the matching
+engine, waits for socket shutdown, and replaces only that variant. Managed
+processes and saved state survive the update. No variant flag retains the
+normal Pinch identity and `~/.pinch` state; `PINCH_HOME` remains an explicit
+runtime override for development and tests.
+
+The menu bar and popover label variants. Distinct bundle IDs keep macOS
+notification authorization and Notification Center cleanup separate. Engines
+can discover one another's listeners, but manage only their own registry;
+server ports remain shared machine resources. Public release packaging still
+packages the default `dist/Pinch.app` only.

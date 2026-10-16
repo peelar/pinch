@@ -13,8 +13,27 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
 PROFILE="${PROFILE:-release}"
+VARIANT=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --variant)
+      [ "$#" -ge 2 ] || { echo '--variant needs a name' >&2; exit 1; }
+      VARIANT="$2"
+      [[ "$VARIANT" =~ ^[a-z][a-z0-9]*(-[a-z0-9]+)*$ ]] && [ "${#VARIANT}" -le 32 ] || { echo 'Variant must be a lowercase slug of at most 32 characters' >&2; exit 1; }
+      shift 2;;
+    --help) echo 'Usage: bundle.sh [--variant proactive]'; exit 0;;
+    *) echo "Unknown option: $1" >&2; exit 1;;
+  esac
+done
+APP_NAME=Pinch
+BUNDLE_ID=sh.pinch.Pinch
+if [ -n "$VARIANT" ]; then
+  LABEL=$(printf '%s' "$VARIANT" | awk -F- '{for (i=1;i<=NF;i++) printf "%s%s%s", (i>1?" ":""), toupper(substr($i,1,1)), substr($i,2)}')
+  APP_NAME="Pinch $LABEL"
+  BUNDLE_ID="$BUNDLE_ID.$VARIANT"
+fi
 VERSION=$(sed -n '/\[workspace.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml)
-APP="dist/Pinch.app"
+APP="dist/$APP_NAME.app"
 MACOS="$APP/Contents/MacOS"
 
 if [ "$PROFILE" = "release" ]; then
@@ -26,7 +45,8 @@ else
 fi
 
 rm -rf "$APP"
-mkdir -p "$MACOS"
+mkdir -p "$MACOS" "$APP/Contents/Resources"
+if [ -n "$VARIANT" ]; then printf '%s\n' "$VARIANT" > "$APP/Contents/Resources/pinch-variant"; fi
 cp "$TARGET/pinchd" "$TARGET/pinch-ui" "$TARGET/pinch" "$MACOS/"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -34,9 +54,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleIdentifier</key><string>sh.pinch.Pinch</string>
-  <key>CFBundleName</key><string>Pinch</string>
-  <key>CFBundleDisplayName</key><string>Pinch</string>
+  <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
+  <key>CFBundleName</key><string>$APP_NAME</string>
+  <key>CFBundleDisplayName</key><string>$APP_NAME</string>
   <key>CFBundleExecutable</key><string>pinchd</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
@@ -54,6 +74,6 @@ codesign --force --deep --sign - "$APP"
 
 echo
 echo "Built $APP ($PROFILE)."
-echo "  Start:   open $APP        (menu bar icon appears)"
-echo "  CLI:     $MACOS/pinch --help"
-echo "  Install: ln -sf \"\$PWD/$MACOS/pinch\" ~/.local/bin/pinch"
+echo "  Start:   open \"$APP\"        (menu bar icon appears)"
+echo "  CLI:     \"$MACOS/pinch\" --help"
+echo "  Install: scripts/install.sh --app \"\$PWD/$APP\" --no-modify-path"

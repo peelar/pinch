@@ -246,6 +246,16 @@ pub struct SystemMetrics {
     pub sampled_at_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationStatus {
+    #[default]
+    Unavailable,
+    NotDetermined,
+    Disabled,
+    Enabled,
+}
+
 /// Something the engine wants a human to confirm, shown as a notification,
 /// in the UI's inbox, and in `pinch inbox`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -336,6 +346,8 @@ pub enum Response {
         decisions: Vec<Decision>,
         #[serde(default)]
         system: SystemMetrics,
+        #[serde(default)]
+        notifications: NotificationStatus,
     },
     Logs {
         text: String,
@@ -404,9 +416,15 @@ mod tests {
     fn snapshots_from_older_engines_have_unavailable_system_metrics() {
         let response: Response =
             serde_json::from_str(r#"{"type":"snapshot","processes":[],"decisions":[]}"#).unwrap();
-        let Response::Snapshot { system, .. } = response else {
+        let Response::Snapshot {
+            system,
+            notifications,
+            ..
+        } = response
+        else {
             panic!("expected snapshot");
         };
+        assert_eq!(notifications, NotificationStatus::Unavailable);
         assert!(system.cpu_percent.is_none());
         assert_eq!(system.memory_total_bytes, 0);
         assert_eq!(system.sampled_at_ms, 0);
@@ -417,6 +435,7 @@ mod tests {
         let response = Response::Snapshot {
             processes: vec![],
             decisions: vec![],
+            notifications: NotificationStatus::Enabled,
             system: SystemMetrics {
                 cpu_percent: Some(42.0),
                 memory_used_bytes: 12_000,
