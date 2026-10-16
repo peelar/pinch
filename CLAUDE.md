@@ -1,7 +1,7 @@
 # pinch
 
-Read ARCHITECTURE.md first: it holds the design, the v1 scope, the acceptance
-criteria and the build order. Keep it current when decisions change.
+Read [DEVELOPMENT.md](DEVELOPMENT.md) for setup, runtime behavior, and release
+workflows. Keep it current when those change.
 
 - Rust workspace, edition 2024. Crates live in `crates/`; shared deps go in
   `[workspace.dependencies]`.

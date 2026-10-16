@@ -47,6 +47,7 @@ fi
 rm -rf "$APP"
 mkdir -p "$MACOS" "$APP/Contents/Resources"
 if [ -n "$VARIANT" ]; then printf '%s\n' "$VARIANT" > "$APP/Contents/Resources/pinch-variant"; fi
+cp assets/brand/Pinch.icns "$APP/Contents/Resources/Pinch.icns"
 cp "$TARGET/pinchd" "$TARGET/pinch-ui" "$TARGET/pinch" "$MACOS/"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -57,6 +58,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
   <key>CFBundleName</key><string>$APP_NAME</string>
   <key>CFBundleDisplayName</key><string>$APP_NAME</string>
+  <key>CFBundleIconFile</key><string>Pinch</string>
   <key>CFBundleExecutable</key><string>pinchd</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>

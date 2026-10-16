@@ -37,7 +37,7 @@ app before publishing. By default releases are ad hoc signed, with no Apple
 notarization. Developer ID signing is optional: configure these secrets to enable it:
 `MACOS_CERTIFICATE_BASE64`, `MACOS_CERTIFICATE_PASSWORD`,
 `MACOS_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_APP_PASSWORD`, and `APPLE_TEAM_ID`.
-If macOS blocks a download, use the approval instructions in README.md.
+If macOS blocks a download, use the [installation help](../DEVELOPMENT.md#install-and-update).
 Intel builds are not currently distributed.
 
 For the initial release, tag the current 0.1.0 after CI passes. Subsequent

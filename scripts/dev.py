@@ -18,7 +18,8 @@ DEV = ROOT / "target" / "pinch-dev"
 
 def sources():
     paths = [ROOT / "Cargo.toml", ROOT / "Cargo.lock", ROOT / "rust-toolchain.toml"]
-    paths.extend(p for p in (ROOT / "crates").rglob("*") if p.is_file())
+    for directory in ("crates", "assets/brand"):
+        paths.extend(p for p in (ROOT / directory).rglob("*") if p.is_file())
     paths.extend(p for p in (ROOT / ".cargo").rglob("*") if p.is_file())
     return {str(p): hashlib.sha256(p.read_bytes()).digest() for p in paths if p.exists()}
 
@@ -101,7 +102,7 @@ class Preview:
         if ui_changed:
             self.ui = subprocess.Popen([str(DEV / "pinch-ui"), "--dev"], env=self.env)
         self.digests = digests
-        print("Preview ready. Watching crates/; Ctrl-C stops the preview.", flush=True)
+        print("Preview ready. Watching crates/ and assets/brand/; Ctrl-C stops the preview.", flush=True)
 
     def close(self):
         stop(self.ui)
