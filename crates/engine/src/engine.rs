@@ -24,7 +24,7 @@ use pinch_proto::{
 use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
-use crate::lsof;
+use crate::discovery;
 
 pub struct Config {
     /// How long a server may be silent and unconnected before we ask about it.
@@ -43,12 +43,20 @@ impl Config {
     }
 }
 
-/// Callbacks into the macOS layer. They are invoked while the registry lock
+/// Callbacks to consumers of engine decisions. They are invoked while the registry lock
 /// is held, so they must only enqueue work.
 type DecisionsChanged = Box<dyn Fn(&[Decision]) + Send + Sync>;
 
 pub struct Hooks {
     pub decisions_changed: DecisionsChanged,
+}
+
+impl Default for Hooks {
+    fn default() -> Self {
+        Self {
+            decisions_changed: Box::new(|_| {}),
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -545,9 +553,9 @@ impl Engine {
     /// One sampling pass: refresh metrics and ports, discover unmanaged
     /// listeners, and evaluate the staleness rule.
     pub fn tick(&self) {
-        // lsof is slow-ish; run it before taking the lock.
-        let listeners = lsof::listeners();
-        let connected_ports = lsof::established_local_ports();
+        // Socket discovery can be slow; run it before taking the lock.
+        let listeners = discovery::listeners();
+        let connected_ports = discovery::established_local_ports();
 
         let mut inner = self.lock();
         refresh_system_metrics(&mut inner);
