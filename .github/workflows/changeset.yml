@@ -8,13 +8,13 @@ jobs:
     name: Require changeset
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
       - run: pnpm install --frozen-lockfile
       - name: Require a new changeset with a version bump
         if: github.head_ref != 'changeset-release/main' || github.event.pull_request.user.login != 'github-actions[bot]' || github.event.pull_request.head.repo.full_name != github.repository
