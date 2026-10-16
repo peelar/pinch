@@ -11,11 +11,11 @@ if (!pattern.test(cargo)) throw new Error("Workspace version not found");
 const updated = cargo.replace(pattern, (_, prefix, suffix) => `${prefix}${version}${suffix}`);
 if (process.argv.includes("--check")) {
   if (updated !== cargo) throw new Error("Cargo.toml version differs from package.json; run node scripts/sync-version.mjs");
-  const metadata = JSON.parse(execFileSync("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"], { encoding: "utf8" }));
+  const metadata = JSON.parse(execFileSync("cargo", ["metadata", "--locked", "--format-version", "1"], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 }));
   if (metadata.packages.some(pkg => metadata.workspace_members.includes(pkg.id) && pkg.version !== version)) {
     throw new Error("Cargo workspace versions differ");
   }
 } else {
   writeFileSync(manifest, updated);
-  execFileSync("cargo", ["metadata", "--no-deps", "--format-version", "1"], { stdio: "ignore" });
+  execFileSync("cargo", ["metadata", "--format-version", "1"], { stdio: "ignore" });
 }
