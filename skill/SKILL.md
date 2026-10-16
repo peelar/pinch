@@ -8,7 +8,12 @@ description: Start, find, read logs from and stop dev servers (pnpm dev, next de
 Never start a dev server directly (`pnpm dev`, `npm run dev`, `next dev`, ...).
 Start it through `pinch` so it is registered and nobody starts a duplicate.
 
-- Start or reuse: `pinch ensure --name web --wait -- pnpm dev`
+- Start or reuse: `pinch ensure --harness codex --name web --wait -- pnpm dev`
+  Set `--harness` to your actual harness (`claude-code`, `codex`, `cursor`,
+  `gemini-cli`, `copilot`, `opencode`, `zeron`); manual starts use `terminal`.
+  Include `--thread-id` / `--agent-id` when known; do not invent IDs. Environment alternatives are
+  `PINCH_HARNESS`, `PINCH_THREAD_ID`, `PINCH_AGENT_ID`; Codex also reads
+  `CODEX_THREAD_ID`. Repository/worktree and branch are captured automatically.
   Idempotent. If `web` already runs in this repo you get the existing one back.
   `--wait` blocks until it is listening and prints the port.
 - See everything: `pinch ps` (add `--json` for machine-readable output).

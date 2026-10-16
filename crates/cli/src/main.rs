@@ -7,10 +7,11 @@ use std::io::{Read, Seek, SeekFrom};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use pinch_client::{now_ms, request_autostart};
 use pinch_proto::{
-    Decision, DecisionAnswer, Origin, ProcessInfo, Request, Response, Spawn, Status,
+    AgentMetadata, Decision, DecisionAnswer, Harness, Origin, ProcessInfo, Request, Response,
+    Spawn, Status,
 };
 
 #[derive(Parser)]
@@ -27,6 +28,46 @@ struct Cli {
     command: Command,
 }
 
+#[derive(Args)]
+struct Attribution {
+    /// Agent harness; use terminal for a manual start. Can also set PINCH_HARNESS.
+    #[arg(long)]
+    harness: Option<Harness>,
+    /// Conversation/session ID (or PINCH_THREAD_ID; Codex also reads CODEX_THREAD_ID).
+    #[arg(long)]
+    thread_id: Option<String>,
+    /// Agent/subagent ID within a conversation (or PINCH_AGENT_ID).
+    #[arg(long)]
+    agent_id: Option<String>,
+}
+
+impl Attribution {
+    fn resolve(self) -> Result<AgentMetadata> {
+        let harness = match self.harness {
+            Some(harness) => harness,
+            None => std::env::var("PINCH_HARNESS").ok()
+                .context("--harness is required (or set PINCH_HARNESS); use codex, claude-code, or terminal for manual starts")?
+                .parse::<Harness>().map_err(anyhow::Error::msg)?,
+        };
+        Ok(AgentMetadata {
+            harness,
+            thread_id: self
+                .thread_id
+                .or_else(|| std::env::var("PINCH_THREAD_ID").ok())
+                .or_else(|| {
+                    (harness == Harness::Codex)
+                        .then(|| std::env::var("CODEX_THREAD_ID").ok())
+                        .flatten()
+                })
+                .filter(|v| !v.trim().is_empty()),
+            agent_id: self
+                .agent_id
+                .or_else(|| std::env::var("PINCH_AGENT_ID").ok())
+                .filter(|v| !v.trim().is_empty()),
+        })
+    }
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Start a process unless an equivalent one is already running in this repo.
@@ -37,6 +78,8 @@ enum Command {
         /// Who is starting it (defaults to $PINCH_OWNER).
         #[arg(long)]
         owner: Option<String>,
+        #[command(flatten)]
+        attribution: Attribution,
         /// Block until it is listening on a port.
         #[arg(long)]
         wait: bool,
@@ -49,6 +92,8 @@ enum Command {
         name: String,
         #[arg(long)]
         owner: Option<String>,
+        #[command(flatten)]
+        attribution: Attribution,
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
@@ -108,8 +153,14 @@ fn call(req: Request) -> Result<Response> {
     }
 }
 
-fn spawn_request(name: String, owner: Option<String>, command: Vec<String>) -> Result<Spawn> {
+fn spawn_request(
+    name: String,
+    owner: Option<String>,
+    attribution: Attribution,
+    command: Vec<String>,
+) -> Result<Spawn> {
     Ok(Spawn {
+        agent: attribution.resolve()?,
         name,
         command,
         cwd: std::env::current_dir()?.to_string_lossy().into_owned(),
@@ -139,10 +190,11 @@ fn run() -> Result<()> {
         Command::Ensure {
             name,
             owner,
+            attribution,
             wait,
             command,
         } => {
-            let spawn = spawn_request(name, owner, command)?;
+            let spawn = spawn_request(name, owner, attribution, command)?;
             let Response::Ensured {
                 mut process,
                 already_running,
@@ -184,10 +236,15 @@ fn run() -> Result<()> {
         Command::Run {
             name,
             owner,
+            attribution,
             command,
         } => {
-            let Response::Process { process } =
-                call(Request::Run(spawn_request(name, owner, command)?))?
+            let Response::Process { process } = call(Request::Run(spawn_request(
+                name,
+                owner,
+                attribution,
+                command,
+            )?))?
             else {
                 bail!("unexpected reply");
             };
@@ -213,7 +270,18 @@ fn run() -> Result<()> {
                         .collect();
                     if !group.is_empty() {
                         println!("{heading}");
-                        print_table(&group);
+                        if origin == Origin::Managed {
+                            let mut groups = BTreeMap::<_, Vec<ProcessInfo>>::new();
+                            for process in group {
+                                groups.entry(process.group()).or_default().push(process);
+                            }
+                            for (key, entries) in groups {
+                                println!("  {}", key.label());
+                                print_table(&entries);
+                            }
+                        } else {
+                            print_table(&group);
+                        }
                     }
                 }
                 if processes.is_empty() {

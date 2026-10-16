@@ -8,7 +8,12 @@ Paste this into a project's `AGENTS.md` / `CLAUDE.md` (or your global one):
 Never start a dev server directly (`pnpm dev`, `npm run dev`, `next dev`, …).
 Use `pinch` so every server is registered and no one starts a duplicate.
 
-- Start or reuse:  `pinch ensure --name web --wait -- pnpm dev`
+- Start or reuse:  `pinch ensure --harness codex --name web --wait -- pnpm dev`
+  Set `--harness` to your actual harness (`claude-code`, `codex`, `cursor`,
+  `gemini-cli`, `copilot`, `opencode`, `zeron`). Include `--thread-id` and
+  `--agent-id` when known; do not invent IDs. You can instead set
+  `PINCH_HARNESS`, `PINCH_THREAD_ID`, and `PINCH_AGENT_ID`. Codex also reads
+  `CODEX_THREAD_ID`. Worktree and branch are captured automatically.
   Idempotent: if `web` is already running in this repo it returns the existing
   one instead of starting another. `--wait` blocks until it is listening.
 - See everything: `pinch ps` (add `--json` for machine-readable output).
@@ -43,4 +48,4 @@ bare dev-server commands and point the agent at `pinch ensure`:
 The hook script reads the tool call on stdin and, when `tool_input.command`
 matches `(pnpm|npm run|yarn|bun run) dev` or `next dev` and doesn't start with
 `pinch`, exits with code 2 and a message like
-"Use `pinch ensure --name web -- pnpm dev` instead." (Not written yet.)
+"Use `pinch ensure --harness codex --name web -- pnpm dev` instead." (Not written yet.)
