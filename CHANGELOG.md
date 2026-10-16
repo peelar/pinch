@@ -1,5 +1,12 @@
 # pinch
 
+## 0.2.1
+
+### Patch Changes
+
+- 8c24f34: Allow removing stopped processes from their detail view and return to the list after successful removal.
+- 8c24f34: Apply the daemon identity with original app and menu bar icons, high-contrast acid and neutral themes, a pixel wordmark, and concise product copy.
+
 ## 0.2.0
 
 ### Minor Changes
