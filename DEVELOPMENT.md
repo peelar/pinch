@@ -238,15 +238,16 @@ pnpm check:version
 bash -n scripts/bundle.sh scripts/install.sh scripts/release.sh
 ```
 
-Add a Changeset for every PR, including documentation and tooling:
+Add a Changeset for changes users should receive in a release:
 
 ```sh
 pnpm changeset
 ```
 
-Select `pinch` and an appropriate bump; use patch for fixes. The automated
-`changeset-release/main` version PR is the only exception. See
-[the release workflow](.changeset/README.md).
+Select `pinch` and an appropriate bump; use patch for fixes. For internal
+refactors, tests, CI, and contributor docs that preserve app behavior, apply the
+`skip changeset` PR label instead. The automated `changeset-release/main` version
+PR is also exempt. See [the release workflow](.changeset/README.md).
 
 ## Release packaging
 

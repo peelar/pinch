@@ -1,11 +1,15 @@
 # Versioning Pinch
 
-Every PR must add a changeset: run `pnpm changeset`, select a version bump for
-`pinch`, and commit the generated Markdown file with the change. The **Require
-changeset** PR check validates this, including for documentation and tooling PRs.
-Only the automated `changeset-release/main` version PR is exempt because it
-consumes the pending changesets. Configure this check as required in the `main`
-branch protection rules when available for the repository's GitHub plan.
+PRs that change app behavior must add a changeset: run `pnpm changeset`, select
+a version bump for `pinch`, and commit the generated Markdown file. Use patch
+bumps for fixes. For internal refactors, tests, CI, and contributor docs that
+preserve app behavior, apply the `skip changeset` PR label instead.
+
+The **Require changeset** check honors this label and reruns when labels are
+added or removed. The automated `changeset-release/main` version PR is also
+exempt because it consumes the pending changesets. Configure this check as
+required in the `main` branch protection rules when available for the
+repository's GitHub plan.
 
 Pinch has one product version across every Rust crate and
 the macOS app; the private root package exists only to drive Changesets.
