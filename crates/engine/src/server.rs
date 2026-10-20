@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use pinch_client::socket_path;
-use pinch_proto::{PROTOCOL_VERSION, Request, Response};
+use pinch_proto::{NotificationStatus, PROTOCOL_VERSION, Request, Response};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
@@ -19,30 +19,39 @@ pub fn bind() -> anyhow::Result<UnixListener> {
     Ok(UnixListener::bind(path)?)
 }
 
-pub async fn serve(listener: UnixListener, engine: Arc<Engine>) {
+type NotificationReader = Arc<dyn Fn() -> NotificationStatus + Send + Sync>;
+
+pub async fn serve(listener: UnixListener, engine: Arc<Engine>, notifications: NotificationReader) {
     loop {
         let Ok((stream, _)) = listener.accept().await else {
             continue;
         };
         let engine = Arc::clone(&engine);
+        let notifications = Arc::clone(&notifications);
         tokio::spawn(async move {
-            let _ = handle(stream, engine).await;
+            let _ = handle(stream, engine, notifications).await;
         });
     }
 }
 
-async fn handle(stream: UnixStream, engine: Arc<Engine>) -> std::io::Result<()> {
+async fn handle(
+    stream: UnixStream,
+    engine: Arc<Engine>,
+    notifications: NotificationReader,
+) -> std::io::Result<()> {
     let (read, mut write) = stream.into_split();
     let mut line = String::new();
     BufReader::new(read).read_line(&mut line).await?;
 
     let response = match serde_json::from_str::<Request>(&line) {
         // Engine calls can block (restart waits for the old process to die).
-        Ok(request) => tokio::task::spawn_blocking(move || dispatch(&engine, request))
-            .await
-            .unwrap_or_else(|e| Response::Error {
-                message: format!("internal error: {e}"),
-            }),
+        Ok(request) => {
+            tokio::task::spawn_blocking(move || dispatch(&engine, request, &*notifications))
+                .await
+                .unwrap_or_else(|e| Response::Error {
+                    message: format!("internal error: {e}"),
+                })
+        }
         Err(e) => Response::Error {
             message: format!("bad request: {e}"),
         },
@@ -54,7 +63,11 @@ async fn handle(stream: UnixStream, engine: Arc<Engine>) -> std::io::Result<()> 
     write.shutdown().await
 }
 
-fn dispatch(engine: &Arc<Engine>, request: Request) -> Response {
+fn dispatch(
+    engine: &Arc<Engine>,
+    request: Request,
+    notifications: &dyn Fn() -> NotificationStatus,
+) -> Response {
     let result: anyhow::Result<Response> = (|| {
         Ok(match request {
             Request::Hello { .. } => Response::Hello {
@@ -76,7 +89,7 @@ fn dispatch(engine: &Arc<Engine>, request: Request) -> Response {
                     processes,
                     decisions,
                     system,
-                    notifications: pinch_macos::notification_status(),
+                    notifications: notifications(),
                 }
             }
             Request::Stop { name } => Response::Process {
