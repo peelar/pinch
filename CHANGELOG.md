@@ -1,5 +1,12 @@
 # pinch
 
+## 0.2.2
+
+### Patch Changes
+
+- 2b6c838: Add signed in-app updates with a single-row footer, a configuration panel for automatic update checks, release notes, and user-approved installation that preserves managed servers.
+- cd18cb8: Keep Cargo.lock synchronized during version bumps and reject stale locks in version checks.
+
 ## 0.2.1
 
 ### Patch Changes
