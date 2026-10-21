@@ -65,7 +65,6 @@ struct Entry {
     /// sysinfo's start time (seconds) of the root pid: the pid-reuse guard.
     start_time_s: u64,
     kept: bool,
-    snoozed_until_ms: u64,
     #[serde(default)]
     last_activity_ms: u64,
     #[serde(default)]
@@ -147,7 +146,6 @@ impl Engine {
                 (entry.info.origin == Origin::Managed
                     && entry.info.status.is_alive()
                     && !entry.kept
-                    && now >= entry.snoozed_until_ms
                     && decision.process == entry.info.id)
                     .then_some(decision)
             })
@@ -418,10 +416,6 @@ impl Engine {
                 inner.entries[idx].kept = true;
                 inner.entries[idx].info.status = Status::Running;
             }
-            (DecisionAnswer::Snooze, Some(idx)) => {
-                inner.entries[idx].snoozed_until_ms = now_ms() + 60 * 60 * 1000;
-                inner.entries[idx].info.status = Status::Running;
-            }
             (_, None) => {}
         }
         inner.decisions.retain(|d| d.id != decision_id);
@@ -517,7 +511,6 @@ impl Engine {
             info: info.clone(),
             start_time_s,
             kept: false,
-            snoozed_until_ms: 0,
             last_activity_ms: now_ms(),
             pending_decision: None,
             env: spawn.env,
@@ -656,8 +649,7 @@ impl Engine {
                 .max(entry.last_activity_ms);
             let silent_ms = now.saturating_sub(last_activity);
             let connected = entry.info.ports.iter().any(|p| connected_ports.contains(p));
-            let suppressed = entry.kept || now < entry.snoozed_until_ms;
-            let stale = silent_ms >= stale_after_ms && !connected && !suppressed;
+            let stale = silent_ms >= stale_after_ms && !connected && !entry.kept;
 
             let id = entry.info.id.clone();
             let has_decision = inner.decisions.iter().any(|d| d.process == id);

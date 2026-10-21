@@ -125,7 +125,7 @@ pub fn height_for(snapshot: &Snapshot) -> f32 {
         h += 84.0;
     }
     if !list.stale.is_empty() {
-        h += 82.0 + list.stale.len() as f32 * 116.0;
+        h += 38.0 + list.stale.len() as f32 * 60.0;
     }
     if managed + unmanaged == 0.0 && list.stale.is_empty() {
         h += 150.0;
@@ -462,10 +462,9 @@ impl Popover {
             )
     }
 
-    fn answer_decisions(
+    fn stop_stale(
         &mut self,
         decisions: Vec<Decision>,
-        answer: DecisionAnswer,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -491,7 +490,7 @@ impl Popover {
                         }
                         let error = match request(&Request::Answer {
                             decision: decision.id,
-                            answer,
+                            answer: DecisionAnswer::Kill,
                         }) {
                             Ok(Response::Ok) => None,
                             Ok(Response::Error { message }) => Some(message),
@@ -517,103 +516,67 @@ impl Popover {
         .detach();
     }
 
-    fn decision_actions(
-        &self,
-        id: &str,
-        decisions: Vec<Decision>,
-        all: bool,
-        theme: Theme,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let actions = [
-            (
-                if all { "Stop all" } else { "Stop" },
-                DecisionAnswer::Kill,
-                true,
-            ),
-            (
-                if all { "Keep all" } else { "Keep running" },
-                DecisionAnswer::Keep,
-                false,
-            ),
-            (
-                if all { "Snooze all 1h" } else { "Snooze 1h" },
-                DecisionAnswer::Snooze,
-                false,
-            ),
-        ];
-        div()
-            .flex()
-            .gap_2()
-            .children(actions.into_iter().map(|(label, answer, danger)| {
-                let decisions = decisions.clone();
-                button(format!("{id}-{label}"), label, danger, theme)
-                    .when(self.answering, |button| {
-                        button.opacity(0.5).cursor_default()
-                    })
-                    .when(!self.answering, |button| {
-                        button.on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                            cx.stop_propagation();
-                            this.answer_decisions(decisions.clone(), answer, window, cx);
-                        }))
-                    })
-            }))
-    }
-
     fn stale_section(
         &self,
         list: &ProcessList<'_>,
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let summary = if list.stale.iter().all(|(p, _)| p.metrics.is_none()) {
-            format!("{} processes", list.stale.len())
-        } else {
-            format!("~{} to free", bytes(list.stale_ram()))
-        };
+        let decisions = list
+            .stale
+            .iter()
+            .map(|(_, d)| (*d).clone())
+            .collect::<Vec<_>>();
+        let summary = list
+            .stale
+            .iter()
+            .any(|(p, _)| p.metrics.is_some())
+            .then(|| format!("~{} to free", bytes(list.stale_ram())));
+        let stop = div()
+            .id("stop-stale")
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .text_size(px(11.0))
+            .text_color(theme.danger)
+            .child("Stop all")
+            .when(self.answering, |button| button.opacity(0.5))
+            .when(!self.answering, |button| {
+                button
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme.hover))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.stop_stale(decisions.clone(), window, cx);
+                    }))
+            });
         div()
-            .mx_3()
-            .mt_3()
+            .mt_2()
             .mb_2()
-            .rounded_lg()
-            .bg(theme.card)
-            .border_l_2()
-            .border_color(theme.stale)
             .child(
                 div()
-                    .px_3()
-                    .pt_3()
-                    .pb_2()
+                    .px_4()
                     .flex()
-                    .flex_col()
+                    .items_center()
                     .gap_2()
                     .child(
                         div()
-                            .flex()
-                            .justify_between()
-                            .items_center()
-                            .child(
-                                div()
-                                    .text_size(px(13.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(theme.stale)
-                                    .child(format!("Stale · {}", list.stale.len())),
-                            )
-                            .child(
-                                div()
-                                    .font_family(MONO)
-                                    .text_size(px(11.0))
-                                    .text_color(theme.text)
-                                    .child(summary),
-                            ),
+                            .flex_1()
+                            .font_family(MONO)
+                            .text_size(px(10.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.faint)
+                            .child(format!("STALE · {}", list.stale.len())),
                     )
-                    .child(self.decision_actions(
-                        "stale-all",
-                        list.stale.iter().map(|(_, d)| (*d).clone()).collect(),
-                        true,
-                        theme,
-                        cx,
-                    )),
+                    .when_some(summary, |header, summary| {
+                        header.child(
+                            div()
+                                .font_family(MONO)
+                                .text_size(px(10.0))
+                                .text_color(theme.faint)
+                                .child(summary),
+                        )
+                    })
+                    .child(stop),
             )
             .children(list.stale.iter().map(|(process, decision)| {
                 let name = process.name.clone();
@@ -624,8 +587,8 @@ impl Popover {
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_else(|| workspace.to_string());
                 let quiet = decision.quiet_since_ms.map_or_else(
-                    || "No recent activity observed".into(),
-                    |since| format!("Quiet for {}", duration(now_ms().saturating_sub(since))),
+                    || "quiet".into(),
+                    |since| format!("quiet {}", duration(now_ms().saturating_sub(since))),
                 );
                 let port = process
                     .ports
@@ -638,67 +601,70 @@ impl Popover {
                     .unwrap_or_default();
                 div()
                     .id(SharedString::from(format!("stale-{}", process.id.0)))
-                    .px_3()
+                    .ml_6()
+                    .mr_3()
+                    .px_2()
                     .py_2()
+                    .rounded_md()
                     .flex()
-                    .flex_col()
-                    .gap_1()
-                    .border_t_1()
-                    .border_color(theme.border)
+                    .items_center()
+                    .gap_3()
                     .cursor_pointer()
+                    .hover(|style| style.bg(theme.hover))
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         this.open_logs(name.clone(), window, cx);
                     }))
+                    .child(dot(theme.stale))
+                    .child(crate::icons::runtime(&process.kind))
                     .child(
                         div()
+                            .flex_1()
+                            .min_w_0()
                             .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(dot(theme.stale))
+                            .flex_col()
                             .child(
                                 div()
-                                    .flex_1()
-                                    .min_w_0()
                                     .truncate()
                                     .text_size(px(13.0))
                                     .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.muted)
                                     .child(process.name.clone()),
                             )
                             .child(
                                 div()
-                                    .flex_none()
-                                    .font_family(MONO)
-                                    .text_size(px(12.0))
-                                    .child(memory),
+                                    .id(SharedString::from(format!(
+                                        "stale-context-{}",
+                                        process.id.0
+                                    )))
+                                    .truncate()
+                                    .text_size(px(11.0))
+                                    .text_color(theme.faint)
+                                    .child(format!("{workspace}{port}"))
+                                    .tooltip(move |_, cx| {
+                                        cx.new(|_| AgentGroupDetails(group.clone())).into()
+                                    }),
                             ),
                     )
                     .child(
                         div()
-                            .id(SharedString::from(format!(
-                                "stale-context-{}",
-                                process.id.0
-                            )))
-                            .truncate()
-                            .text_size(px(11.0))
-                            .text_color(theme.faint)
-                            .child(format!("{workspace} · {}{port}", process.kind.label()))
-                            .tooltip(move |_, cx| {
-                                cx.new(|_| AgentGroupDetails(group.clone())).into()
-                            }),
+                            .flex_none()
+                            .flex()
+                            .flex_col()
+                            .items_end()
+                            .font_family(MONO)
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(theme.muted)
+                                    .child(memory),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .text_color(theme.faint)
+                                    .child(quiet),
+                            ),
                     )
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(theme.muted)
-                            .child(quiet),
-                    )
-                    .child(self.decision_actions(
-                        &decision.id,
-                        vec![(*decision).clone()],
-                        false,
-                        theme,
-                        cx,
-                    ))
             }))
     }
 

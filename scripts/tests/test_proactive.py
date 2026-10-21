@@ -119,21 +119,17 @@ class ProactiveTests(unittest.TestCase):
         decision = self.wait_for(lambda: self.snapshot()["decisions"])[0]
         self.assertEqual(decision["process"], restarted["id"])
 
-    def test_snooze_survives_restart_and_stop_terminates_managed_process(self):
-        self.ensure("idle", "import time; time.sleep(180)")
-        decision = self.wait_for(lambda: self.snapshot()["decisions"])[0]
-        self.answer(decision, "snooze")
+    def test_legacy_state_restores_without_delaying_cleanup_and_stop_terminates_process(self):
+        original = self.ensure("idle", "import time; time.sleep(180)")["process"]
         self.stop_engine()
         state = json.loads((self.home / "state.json").read_text())
-        self.assertGreater(state[0]["snoozed_until_ms"], time.time() * 1000 + 3_000_000)
-        self.start_engine()
-        self.assert_quiet_for(6)
-        # Make the snooze expire while the engine is stopped.
-        self.stop_engine()
-        state[0]["snoozed_until_ms"] = 0
+        # Older installations persisted a suppression deadline. It no longer applies.
+        state[0]["snoozed_until_ms"] = int(time.time() * 1000) + 3_600_000
         (self.home / "state.json").write_text(json.dumps(state))
         self.start_engine()
         decision = self.wait_for(lambda: self.snapshot()["decisions"])[0]
+        restored = self.snapshot()["processes"][0]
+        self.assertEqual(restored["pid"], original["pid"])
         self.answer(decision, "kill")
         process = self.snapshot()["processes"][0]
         self.assertEqual(process["status"]["state"], "exited")

@@ -126,7 +126,7 @@ enum Command {
     /// Answer a pending decision.
     Answer {
         decision: String,
-        #[arg(value_parser = ["kill", "keep", "snooze"])]
+        #[arg(value_parser = ["kill", "keep"])]
         answer: String,
     },
     /// Quit the engine (managed processes keep running).
@@ -334,7 +334,7 @@ fn run() -> Result<()> {
                 for d in decisions {
                     println!("{}  {}", d.id, d.reason);
                     println!(
-                        "    {} answer {} kill|keep|snooze",
+                        "    {} answer {} kill|keep",
                         pinch_client::installation::cli_name(),
                         d.id
                     );
@@ -344,8 +344,7 @@ fn run() -> Result<()> {
         Command::Answer { decision, answer } => {
             let answer = match answer.as_str() {
                 "kill" => DecisionAnswer::Kill,
-                "keep" => DecisionAnswer::Keep,
-                _ => DecisionAnswer::Snooze,
+                _ => DecisionAnswer::Keep,
             };
             call(Request::Answer { decision, answer })?;
             println!("done");

@@ -1,6 +1,6 @@
 //! The engine's thin macOS layer: the menu bar status item (shows how many
 //! decisions are waiting, opens `pinch-ui` on click) and actionable
-//! notifications (Stop / Keep running / Snooze) that answer decisions without opening
+//! notifications (Stop / Keep running) that answer decisions without opening
 //! the UI. Built on `objc2`.
 //!
 //! AppKit objects may only be touched on the main thread, so the rest of the
@@ -50,7 +50,6 @@ pub struct Anchor {
 pub enum Action {
     Kill,
     Keep,
-    Snooze,
 }
 
 /// Called from the main thread (clicks) or an arbitrary one (notification
@@ -214,7 +213,6 @@ define_class!(
                 match action.to_string().as_str() {
                     "kill" => (callbacks.on_action)(id, Action::Kill),
                     "keep" => (callbacks.on_action)(id, Action::Keep),
-                    "snooze" => (callbacks.on_action)(id, Action::Snooze),
                     _ if &*action == default => OPEN_REQUESTED.store(true, Ordering::SeqCst),
                     _ => {}
                 }
@@ -224,7 +222,7 @@ define_class!(
     }
 );
 
-/// Register the Kill/Keep/Snooze category and ask for permission. Only works
+/// Register the Kill/Keep category and ask for permission. Only works
 /// for a process running from a `.app` bundle; returns whether it did.
 fn setup_notifications() -> Option<Retained<NotificationDelegate>> {
     if NSBundle::mainBundle().bundleIdentifier().is_none() {
@@ -247,14 +245,9 @@ fn setup_notifications() -> Option<Retained<NotificationDelegate>> {
         &ns("Keep running"),
         UNNotificationActionOptions::empty(),
     );
-    let snooze = UNNotificationAction::actionWithIdentifier_title_options(
-        &ns("snooze"),
-        &ns("Snooze 1h"),
-        UNNotificationActionOptions::empty(),
-    );
     let category = UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
         &ns(CATEGORY),
-        &NSArray::from_retained_slice(&[kill, keep, snooze]),
+        &NSArray::from_retained_slice(&[kill, keep]),
         &NSArray::new(),
         UNNotificationCategoryOptions::empty(),
     );

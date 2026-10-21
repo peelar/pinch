@@ -215,16 +215,17 @@ so brief requests may be missed. RAM estimates use process-tree RSS.
 
 The popover shows only live processes. Pending cleanup decisions appear once in
 its **Stale** section, above the regular workspace groups, ordered by estimated
-reclaimable RAM. The section totals that memory and offers Stop all, Keep all,
-and Snooze all 1h. Each process also has individual actions and opens its logs
-when clicked. Bulk actions apply to the decisions listed when clicked; new
+reclaimable RAM. A subtle heading shows the memory total and a single Stop all
+action; indented rows open their logs, where individual stop controls remain.
+Stop all applies to the decisions listed when clicked; new
 suggestions are not included. Each answer rechecks activity; stopping also
 revalidates process identity.
 Stopped processes leave the list immediately; their history and logs remain
 available through the CLI.
 
-Stop, Keep running, and Snooze 1h resolve the same decisions through the Stale
-section, notifications, and `pinch inbox`. Renewed activity removes the suggestion
+Stop all in the Stale section resolves the same decisions as Stop in
+notifications and `pinch inbox`. Keep running remains available through
+notifications and the CLI. Renewed activity removes the suggestion
 and its notification and returns the process to its regular workspace group.
 Keep lasts until the process restarts. Decisions and answers persist across
 engine updates; restored decisions do not produce duplicate banners. Processes

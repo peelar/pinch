@@ -284,8 +284,6 @@ pub enum DecisionAnswer {
     Kill,
     /// Keep running and don't ask about this process again.
     Keep,
-    /// Ask again in an hour.
-    Snooze,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
