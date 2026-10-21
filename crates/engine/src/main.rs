@@ -4,7 +4,7 @@
 mod desktop;
 
 use anyhow::Result;
-use pinch_engine::{EngineRuntime, Hooks};
+use pinch_engine::{EngineRuntime, Hooks, UpdateService};
 use pinch_proto::NotificationStatus;
 
 fn main() -> Result<()> {
@@ -20,11 +20,19 @@ fn main() -> Result<()> {
 
     #[cfg(all(target_os = "macos", feature = "desktop"))]
     if !std::env::args().any(|a| a == "--headless") {
-        let runtime = EngineRuntime::start(desktop::hooks(), desktop::notification_status)?;
+        let runtime = EngineRuntime::start(
+            desktop::hooks(),
+            desktop::notification_status,
+            desktop::updates(),
+        )?;
         return desktop::run(runtime);
     }
 
-    let runtime = EngineRuntime::start(Hooks::default(), || NotificationStatus::Unavailable)?;
+    let runtime = EngineRuntime::start(
+        Hooks::default(),
+        || NotificationStatus::Unavailable,
+        UpdateService::default(),
+    )?;
     runtime.start_sampler();
     std::thread::park();
     Ok(())

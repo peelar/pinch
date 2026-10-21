@@ -36,9 +36,12 @@ git push origin "v$(node -p 'require("./package.json").version')"
 ```
 
 The Release workflow builds an Apple Silicon app and creates a draft GitHub
-release with a zip and SHA-256 checksum. Review its notes and test the downloaded
-app before publishing. By default releases are ad hoc signed, with no Apple
-notarization. Developer ID signing is optional: configure these secrets to enable it:
+release with a zip, SHA-256 checksum, and signed Sparkle update feed.
+`SPARKLE_PRIVATE_KEY` must contain the private key matching
+`native/updater/public-key.txt`. Publishing the stable release makes its feed
+available to installed apps; drafts and prereleases are not offered. Review its
+notes and test the downloaded app before publishing. By default releases are
+ad hoc signed, with no Apple notarization. Developer ID signing is optional: configure these secrets to enable it:
 `MACOS_CERTIFICATE_BASE64`, `MACOS_CERTIFICATE_PASSWORD`,
 `MACOS_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_APP_PASSWORD`, and `APPLE_TEAM_ID`.
 If macOS blocks a download, use the [installation help](../DEVELOPMENT.md#install-and-update).

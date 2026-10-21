@@ -32,6 +32,9 @@ you keep an eye on things from the menu bar.
 Builds are currently ad hoc signed. If macOS blocks the app, see
 [installation help](DEVELOPMENT.md#install-and-update).
 
+Pinch checks for updates and shows an update button in the menu bar popover.
+You choose when to install and relaunch; managed servers keep running.
+
 [Agent instructions](docs/agent-instructions.md) ·
 [Development](DEVELOPMENT.md) ·
 [Releases](https://github.com/peelar/pinch/releases) ·

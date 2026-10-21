@@ -6,13 +6,23 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::Result;
-use pinch_engine::{EngineRuntime, Hooks};
+use pinch_engine::{EngineRuntime, Hooks, UpdateService};
 use pinch_macos::{Action, Callbacks, Handle};
 use pinch_proto::DecisionAnswer;
 
 pub use pinch_macos::notification_status;
 
 static MENU_BAR: OnceLock<Handle> = OnceLock::new();
+
+pub fn updates() -> UpdateService {
+    UpdateService {
+        status: Box::new(pinch_macos::updater::status),
+        check: Box::new(|| pinch_macos::updater::check().map_err(anyhow::Error::msg)),
+        set_automatic_checks: Box::new(|enabled| {
+            pinch_macos::updater::set_automatic(enabled).map_err(anyhow::Error::msg)
+        }),
+    }
+}
 
 pub fn hooks() -> Hooks {
     Hooks {
@@ -30,8 +40,10 @@ pub fn run(runtime: EngineRuntime) -> Result<()> {
     let engine = runtime.engine();
     let ui = Arc::new(ui::Launcher::default());
     let first_launch_ui = Arc::clone(&ui);
+    let update_ui = Arc::clone(&ui);
     let action_engine = Arc::clone(&engine);
     let callbacks = Callbacks {
+        on_update_install: Box::new(move || update_ui.stop()),
         on_click: Box::new(move |anchor| ui.toggle(anchor)),
         on_action: Box::new(move |decision, action| {
             let answer = match action {

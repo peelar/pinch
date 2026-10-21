@@ -3,6 +3,9 @@
 mod discovery;
 mod engine;
 mod server;
+mod updates;
+
+pub use updates::UpdateService;
 
 pub use engine::{Config, Engine, Hooks};
 
@@ -22,6 +25,7 @@ impl EngineRuntime {
     pub fn start(
         hooks: Hooks,
         notification_status: impl Fn() -> NotificationStatus + Send + Sync + 'static,
+        updates: UpdateService,
     ) -> Result<Self> {
         let executor = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -35,6 +39,7 @@ impl EngineRuntime {
             listener,
             Arc::clone(&engine),
             Arc::new(notification_status),
+            Arc::new(updates),
         ));
         eprintln!("pinchd {} listening", env!("CARGO_PKG_VERSION"));
         Ok(Self {

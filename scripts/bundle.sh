@@ -48,6 +48,7 @@ rm -rf "$APP"
 mkdir -p "$MACOS" "$APP/Contents/Resources"
 if [ -n "$VARIANT" ]; then printf '%s\n' "$VARIANT" > "$APP/Contents/Resources/pinch-variant"; fi
 cp assets/brand/Pinch.icns "$APP/Contents/Resources/Pinch.icns"
+cp crates/ui/assets/icons/LICENSE "$APP/Contents/Resources/Zeron-Icons-LICENSE"
 cp "$TARGET/pinchd" "$TARGET/pinch-ui" "$TARGET/pinch" "$MACOS/"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -69,6 +70,25 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+# Variants must never update into the public application identity.
+if [ -z "$VARIANT" ] || [ -n "${PINCH_UPDATE_FEED_URL:-}" ]; then
+  SPARKLE=$(scripts/fetch-sparkle.sh)
+  mkdir -p "$APP/Contents/Frameworks"
+  ditto "$SPARKLE/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
+  cp "$SPARKLE/LICENSE" "$APP/Contents/Resources/Sparkle-LICENSE"
+  clang -dynamiclib -fobjc-arc -mmacosx-version-min=13.0 \
+    -F "$SPARKLE" -framework Sparkle -framework AppKit \
+    -Wl,-rpath,@loader_path -Wl,-install_name,@rpath/libpinch-updater.dylib \
+    native/updater/bridge.m -o "$APP/Contents/Frameworks/libpinch-updater.dylib"
+  PLIST="$APP/Contents/Info.plist"
+  FEED_URL="${PINCH_UPDATE_FEED_URL:-https://github.com/peelar/pinch/releases/latest/download/appcast.xml}"
+  /usr/libexec/PlistBuddy -c "Add :SUFeedURL string $FEED_URL" "$PLIST"
+  /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string $(cat native/updater/public-key.txt)" "$PLIST"
+  /usr/libexec/PlistBuddy -c 'Add :SUEnableAutomaticChecks bool true' "$PLIST"
+  /usr/libexec/PlistBuddy -c 'Add :SUAutomaticallyUpdate bool false' "$PLIST"
+  /usr/libexec/PlistBuddy -c 'Add :SUAllowsAutomaticUpdates bool false' "$PLIST"
+fi
 
 # Ad-hoc signature: enough for local use. Distributing to other people needs a
 # Developer ID certificate and notarization.

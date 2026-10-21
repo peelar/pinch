@@ -71,8 +71,17 @@ The [README](README.md#get-pinch) has the public installer command. It installs
 directory to zsh/bash PATH configuration. Open a new terminal afterward.
 The first CLI command starts the engine and menu bar on demand.
 
-Rerun the installer to update. It shuts down the matching engine before replacing
-the bundle; managed servers and saved state survive. Run `pinch setup` explicitly
+The app checks for updates daily and shows **Update…** in the popover footer
+when a published stable release is available. The **cog button** in the header
+opens the configuration panel, where **Automatic updates** controls background checks and **Check for
+Updates…** opens the update dialog manually.
+Installation always requires approval. Sparkle verifies the archive's Ed25519
+signature, replaces the bundle, and relaunches Pinch. Managed servers keep their
+PIDs and are re-adopted after restart. The CLI symlink and saved state stay put.
+Existing installations need one installer upgrade to gain the updater.
+
+You can also rerun the installer to update. It shuts down the matching engine
+before replacing the bundle; managed servers and saved state survive. Run `pinch setup` explicitly
 after upgrading to refresh installed agent skills. Installer options include:
 
 - `--no-modify-path`: leave shell configuration alone.
@@ -141,7 +150,8 @@ five seconds. Quitting Pinch leaves managed processes running.
 The engine prewarms a resident UI and forwards menu-bar clicks over stdin. The
 popover reads a cached snapshot and refreshes it while open. The log view strips
 ANSI sequences and is not virtualized. The engine starts on demand; a launchd
-agent and automatic updates are not implemented.
+agent is not implemented. The bundled macOS layer owns Sparkle updates; headless
+engines and source previews do not check for updates.
 
 ### Engine and desktop boundaries
 
@@ -158,9 +168,10 @@ shell; the daemon then runs headless even without `--headless`. Normal builds
 continue to support runtime `--headless`. This is a dependency boundary, not a
 Linux release or a supported Linux build.
 
-RPC receives notification status through a supplied reader; headless mode returns
-`Unavailable`. Engine decision callbacks only enqueue work because they execute
-under the registry lock. The desktop shell synchronizes restored decisions with
+RPC receives notification status through a supplied reader and update actions
+through a supplied service. Headless mode returns `Unavailable` notifications
+and rejects update actions. Engine decision callbacks only enqueue work because
+they execute under the registry lock. The desktop shell synchronizes restored decisions with
 banner suppression before starting sampling, then forwards subsequent changes.
 Notification actions revalidate through the engine away from the native UI thread.
 
@@ -271,3 +282,40 @@ Changesets synchronizes the product version across package.json, Rust crates,
 and app bundles. Use `pnpm run version`, then `pnpm check:version`. Follow the
 [release workflow](.changeset/README.md) for the version PR, matching tag,
 and review of the draft release before publication.
+
+### In-app update packaging
+
+`scripts/fetch-sparkle.sh` downloads the pinned Sparkle distribution and verifies
+its SHA-256. Bundling embeds the framework, its license, and a small Objective-C
+bridge. Rust loads the bridge only from the app bundle; ordinary Cargo builds do
+not need Sparkle. Native updater calls stay on the AppKit thread. The desktop
+shell supplies an update service to the RPC runtime; headless engines use its
+unavailable default. Variants omit updates unless explicitly built with
+`PINCH_UPDATE_FEED_URL` for isolated testing.
+Never point a variant at the stable feed, which contains the default app identity.
+
+The public update key is `native/updater/public-key.txt`. Its private key is stored
+in the local Keychain under account `sh.pinch.Pinch`, and in the repository secret
+`SPARKLE_PRIVATE_KEY`. Keep a secure backup; do not regenerate it on each release.
+To provision another machine, use Sparkle's `generate_keys` import/export commands.
+No private key belongs in the repository. Replacing the public key requires a
+planned key migration so existing installations can still verify updates.
+
+Release packaging signs the ZIP and checks the signature against the embedded
+public key. It generates `appcast.xml` with that version's Changesets release
+notes and an immutable, version-specific download URL. The workflow uploads the
+feed to the draft release. The app reads `/releases/latest/download/appcast.xml`,
+so drafts and prereleases are not offered, and publishing a stable release makes
+its feed available without a separate deployment. Until the first release with
+an appcast is published, manual checks report a feed-download error.
+
+Developer ID signing additionally signs Sparkle's nested helpers before signing
+and notarizing the containing app. Apple signing credentials are separate from
+the Sparkle key and still need to be configured for notarized public releases.
+
+For an isolated updater exercise, build a named variant with an explicit local
+feed URL, then package a higher-version copy with the same variant identity and
+public key. Sign its ZIP with the Keychain key and serve the test feed through a
+Pinch-managed local server. Use the installed variant's update button and confirm
+that the app version changes, the old UI exits, and a managed server retains its
+PID and responds after relaunch. Source preview verification cannot cover this.
