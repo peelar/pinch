@@ -11,6 +11,10 @@ concurrency:
 jobs:
   check:
     runs-on: macos-14
+    env:
+      # Keep file/line backtraces without generating full debugger metadata.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -21,8 +25,13 @@ jobs:
         run: rustup show
       - name: Check formatting
         run: cargo fmt --all -- --check
+      - name: Check shell scripts
+        run: bash -n scripts/bundle.sh scripts/install.sh scripts/release.sh
+      - uses: Swatinem/rust-cache@v2
       - name: Check engine boundaries
         run: python3 scripts/check_architecture.py
+      - name: Check release versions
+        run: node scripts/sync-version.mjs --check
       - name: Build without desktop integration
         run: cargo check -p pinch-engine -p pinch-cli --no-default-features --locked
       - name: Clippy
@@ -33,7 +42,3 @@ jobs:
         run: cargo build --workspace --locked
       - name: Integration tests
         run: python3 -m unittest discover -s scripts/tests -v
-      - name: Check release versions
-        run: node scripts/sync-version.mjs --check
-      - name: Check shell scripts
-        run: bash -n scripts/bundle.sh scripts/install.sh scripts/release.sh
