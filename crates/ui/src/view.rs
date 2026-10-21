@@ -18,6 +18,7 @@ use pinch_proto::{NotificationStatus, SystemMetrics};
 
 pub const WIDTH: f32 = 400.0;
 const LOG_HEIGHT: f32 = 520.0;
+const CONFIGURATION_HEIGHT: f32 = 280.0;
 const MONO: &str = "Menlo";
 
 #[derive(Default, Clone)]
@@ -25,6 +26,7 @@ pub struct Snapshot {
     pub loading: bool,
     pub system: SystemMetrics,
     pub notifications: NotificationStatus,
+    pub updates: pinch_proto::UpdateStatus,
     pub processes: Vec<ProcessInfo>,
     pub decisions: Vec<Decision>,
     pub error: Option<String>,
@@ -86,10 +88,12 @@ fn fetch_engine() -> Snapshot {
             decisions,
             system,
             notifications,
+            updates,
         }) => Snapshot {
             loading: false,
             system,
             notifications,
+            updates,
             processes,
             decisions,
             error: None,
@@ -154,6 +158,7 @@ pub fn height_for(snapshot: &Snapshot) -> f32 {
 
 enum Screen {
     List,
+    Configuration,
     Logs { name: String, text: String },
 }
 
@@ -190,7 +195,7 @@ impl Popover {
             loop {
                 let Ok(logs_for) = this.update(cx, |this, _| match &this.screen {
                     Screen::Logs { name, .. } => Some(name.clone()),
-                    Screen::List => None,
+                    Screen::List | Screen::Configuration => None,
                 }) else {
                     break;
                 };
@@ -323,7 +328,7 @@ impl Popover {
                 return;
             }
             match self.screen {
-                Screen::Logs { .. } => self.back(window, cx),
+                Screen::Logs { .. } | Screen::Configuration => self.back(window, cx),
                 Screen::List => dismiss(window, cx),
             }
         }
@@ -331,7 +336,7 @@ impl Popover {
 
     // ---- pieces -----------------------------------------------------------
 
-    fn header(&self) -> impl IntoElement {
+    fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::for_appearance(gpui::WindowAppearance::Dark);
         let live: Vec<&ProcessInfo> = self
             .snapshot
@@ -382,6 +387,8 @@ impl Popover {
                 div()
                     .flex()
                     .flex_col()
+                    .flex_1()
+                    .min_w_0()
                     .gap_1()
                     .child(
                         gpui::svg()
@@ -407,6 +414,7 @@ impl Popover {
                         .child(variant),
                 )
             })
+            .child(self.configuration_button(theme, cx))
     }
 
     fn onboarding_card(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1074,29 +1082,138 @@ impl Popover {
             .into_any_element()
     }
 
+    fn check_for_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match request(&Request::CheckForUpdates) {
+            Ok(Response::Ok) => dismiss(window, cx),
+            Ok(Response::Error { message }) => {
+                self.snapshot.error = Some(message);
+                cx.notify();
+            }
+            Err(error) => {
+                self.snapshot.error = Some(error.to_string());
+                cx.notify();
+            }
+            _ => {}
+        }
+    }
+
+    fn configuration(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let updates = &self.snapshot.updates;
+        div().flex().flex_col().flex_1().min_h_0()
+            .child(div().px_3().pt_3().pb_2()
+                .child(div().id("configuration-back").flex().items_center().gap_2()
+                    .cursor_pointer().rounded_md().px_2().py_1().hover(|s| s.bg(theme.hover))
+                    .child(div().text_color(theme.muted).child("‹"))
+                    .child(div().text_size(px(14.0)).font_weight(FontWeight::SEMIBOLD).child("Configuration"))
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.back(window, cx)))))
+            .child(div().px_4().py_3().flex().flex_col().gap_3()
+                .child(div().flex().items_center().justify_between()
+                    .child(div().text_size(px(13.0)).child("Automatic updates"))
+                    .child(div().id("automatic-update-checks")
+                        .w(px(34.0)).h(px(20.0)).rounded_full().px(px(3.0))
+                        .flex().items_center()
+                        .bg(if updates.automatic_checks { theme.accent } else { theme.border })
+                        .when(updates.automatic_checks, |s| s.justify_end())
+                        .child(div().size(px(14.0)).rounded_full().bg(theme.text))
+                        .when(updates.enabled, |toggle| toggle.cursor_pointer().on_click(
+                            cx.listener(|this, _: &ClickEvent, _, cx| {
+                                let enabled = !this.snapshot.updates.automatic_checks;
+                                match request(&Request::SetAutomaticUpdateChecks { enabled }) {
+                                    Ok(Response::Ok) => this.snapshot.updates.automatic_checks = enabled,
+                                    Ok(Response::Error { message }) => this.snapshot.error = Some(message),
+                                    Err(error) => this.snapshot.error = Some(error.to_string()),
+                                    _ => {},
+                                }
+                                cx.notify();
+                            })))
+                        .when(!updates.enabled, |toggle| toggle.opacity(0.4))))
+                .child(div().text_size(px(12.0)).text_color(theme.muted)
+                    .child(if updates.enabled {
+                        "Check for new versions automatically. Installing an update always asks for approval."
+                    } else {
+                        "Updates are unavailable in this build."
+                    }))
+                .when(updates.enabled, |body| body.child(
+                    div().flex().child(button("configuration-check-updates", "Check for Updates…", false, theme)
+                        .when(updates.can_check || updates.available_version.is_some(), |button| button.on_click(
+                            cx.listener(|this, _: &ClickEvent, window, cx| this.check_for_updates(window, cx))))
+                        .when(!updates.can_check && updates.available_version.is_none(), |button| button.opacity(0.4)))))
+                .when_some(self.snapshot.error.clone(), |body, error| body.child(
+                    div().text_size(px(12.0)).text_color(theme.danger).child(error))))
+            .into_any_element()
+    }
+
+    fn configuration_button(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("configuration")
+            .size(px(24.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(|s| s.bg(theme.hover))
+            .child(
+                gpui::svg()
+                    .path("icons/settings.svg")
+                    .size(px(18.0))
+                    .text_color(theme.muted),
+            )
+            .tooltip(|_, cx| cx.new(|_| ConfigurationTooltip).into())
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.confirm_stop = None;
+                this.screen = Screen::Configuration;
+                window.resize(size(px(WIDTH), px(CONFIGURATION_HEIGHT)));
+                cx.notify();
+            }))
+    }
+
     fn footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::for_appearance(gpui::WindowAppearance::Dark);
         div()
             .bg(theme.tint)
+            .border_t_1()
+            .border_color(theme.border)
             .flex()
+            .flex_none()
             .items_center()
             .justify_between()
             .px_4()
             .py_2()
-            .border_t_1()
-            .border_color(theme.border)
             .text_size(px(11.0))
             .text_color(theme.faint)
             .child(
                 div()
-                    .id("quit")
-                    .cursor_pointer()
-                    .hover(|s| s.text_color(theme.text))
-                    .child("Quit pinch")
-                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                        let _ = request(&Request::Shutdown);
-                        cx.quit();
-                    })),
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .id("quit")
+                            .cursor_pointer()
+                            .hover(|s| s.text_color(theme.text))
+                            .child("Quit pinch")
+                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                                let _ = request(&Request::Shutdown);
+                                cx.quit();
+                            })),
+                    )
+                    .when_some(
+                        self.snapshot.updates.available_version.as_ref(),
+                        |actions, _| {
+                            actions.child(
+                                div()
+                                    .id("check-updates")
+                                    .cursor_pointer()
+                                    .text_color(theme.accent)
+                                    .child("Update…")
+                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                        this.check_for_updates(window, cx);
+                                    })),
+                            )
+                        },
+                    ),
             )
             .child(resources::indicators(&self.resources, theme, cx))
     }
@@ -1111,10 +1228,11 @@ impl Render for Popover {
                 .flex_col()
                 .flex_1()
                 .min_h_0()
-                .child(self.header())
+                .child(self.header(cx))
                 .child(self.list(theme, cx))
                 .into_any_element(),
             Screen::Logs { name, text } => self.logs_view(name, text, theme, cx),
+            Screen::Configuration => self.configuration(theme, cx),
         };
 
         div()
@@ -1177,6 +1295,24 @@ fn agent_group_label(group: &ProcessGroup, theme: Theme) -> impl IntoElement {
             .child(div().min_w_0().truncate().child(short));
     }
     header.tooltip(move |_, cx| cx.new(|_| AgentGroupDetails(details.clone())).into())
+}
+
+struct ConfigurationTooltip;
+
+impl Render for ConfigurationTooltip {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::for_appearance(window.appearance());
+        div()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .bg(theme.tooltip)
+            .border_1()
+            .border_color(theme.border)
+            .text_color(theme.text)
+            .text_size(px(11.0))
+            .child("Configuration")
+    }
 }
 
 struct AgentGroupDetails(ProcessGroup);

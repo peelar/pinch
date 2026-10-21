@@ -256,6 +256,14 @@ pub enum NotificationStatus {
     Enabled,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateStatus {
+    pub enabled: bool,
+    pub can_check: bool,
+    pub automatic_checks: bool,
+    pub available_version: Option<String>,
+}
+
 /// Something the engine wants a human to confirm, shown as a notification,
 /// in the UI's inbox, and in `pinch inbox`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -301,6 +309,10 @@ pub enum Request {
     Run(Spawn),
     /// Processes and pending decisions in one round trip.
     Snapshot,
+    CheckForUpdates,
+    SetAutomaticUpdateChecks {
+        enabled: bool,
+    },
     /// Stop by name, id, or port number.
     Stop {
         name: String,
@@ -348,6 +360,8 @@ pub enum Response {
         system: SystemMetrics,
         #[serde(default)]
         notifications: NotificationStatus,
+        #[serde(default)]
+        updates: UpdateStatus,
     },
     Logs {
         text: String,
@@ -436,6 +450,7 @@ mod tests {
             processes: vec![],
             decisions: vec![],
             notifications: NotificationStatus::Enabled,
+            updates: UpdateStatus::default(),
             system: SystemMetrics {
                 cpu_percent: Some(42.0),
                 memory_used_bytes: 12_000,

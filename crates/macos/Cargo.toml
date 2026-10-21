@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+libc.workspace = true
 pinch-proto.workspace = true
 block2 = "0.6.2"
 objc2 = "0.6.5"

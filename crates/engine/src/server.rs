@@ -7,6 +7,7 @@ use pinch_proto::{NotificationStatus, PROTOCOL_VERSION, Request, Response};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
+use crate::UpdateService;
 use crate::engine::Engine;
 
 pub fn bind() -> anyhow::Result<UnixListener> {
@@ -21,15 +22,21 @@ pub fn bind() -> anyhow::Result<UnixListener> {
 
 type NotificationReader = Arc<dyn Fn() -> NotificationStatus + Send + Sync>;
 
-pub async fn serve(listener: UnixListener, engine: Arc<Engine>, notifications: NotificationReader) {
+pub async fn serve(
+    listener: UnixListener,
+    engine: Arc<Engine>,
+    notifications: NotificationReader,
+    updates: Arc<UpdateService>,
+) {
     loop {
         let Ok((stream, _)) = listener.accept().await else {
             continue;
         };
         let engine = Arc::clone(&engine);
         let notifications = Arc::clone(&notifications);
+        let updates = Arc::clone(&updates);
         tokio::spawn(async move {
-            let _ = handle(stream, engine, notifications).await;
+            let _ = handle(stream, engine, notifications, updates).await;
         });
     }
 }
@@ -38,6 +45,7 @@ async fn handle(
     stream: UnixStream,
     engine: Arc<Engine>,
     notifications: NotificationReader,
+    updates: Arc<UpdateService>,
 ) -> std::io::Result<()> {
     let (read, mut write) = stream.into_split();
     let mut line = String::new();
@@ -45,13 +53,13 @@ async fn handle(
 
     let response = match serde_json::from_str::<Request>(&line) {
         // Engine calls can block (restart waits for the old process to die).
-        Ok(request) => {
-            tokio::task::spawn_blocking(move || dispatch(&engine, request, &*notifications))
-                .await
-                .unwrap_or_else(|e| Response::Error {
-                    message: format!("internal error: {e}"),
-                })
-        }
+        Ok(request) => tokio::task::spawn_blocking(move || {
+            dispatch(&engine, request, &*notifications, &updates)
+        })
+        .await
+        .unwrap_or_else(|e| Response::Error {
+            message: format!("internal error: {e}"),
+        }),
         Err(e) => Response::Error {
             message: format!("bad request: {e}"),
         },
@@ -67,6 +75,7 @@ fn dispatch(
     engine: &Arc<Engine>,
     request: Request,
     notifications: &dyn Fn() -> NotificationStatus,
+    updates: &UpdateService,
 ) -> Response {
     let result: anyhow::Result<Response> = (|| {
         Ok(match request {
@@ -90,7 +99,16 @@ fn dispatch(
                     decisions,
                     system,
                     notifications: notifications(),
+                    updates: (updates.status)(),
                 }
+            }
+            Request::CheckForUpdates => {
+                (updates.check)()?;
+                Response::Ok
+            }
+            Request::SetAutomaticUpdateChecks { enabled } => {
+                (updates.set_automatic_checks)(enabled)?;
+                Response::Ok
             }
             Request::Stop { name } => Response::Process {
                 process: engine.stop(&name)?,

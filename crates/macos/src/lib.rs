@@ -8,6 +8,8 @@
 //! channel, drained by a timer on the main thread) and hears back through the
 //! [`Callbacks`] it registered.
 
+pub mod updater;
+
 use std::collections::HashSet;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -54,6 +56,7 @@ pub enum Action {
 /// Called from the main thread (clicks) or an arbitrary one (notification
 /// buttons), so keep them quick: hand the work off and return.
 pub struct Callbacks {
+    pub on_update_install: Box<dyn Fn() + Send + Sync>,
     pub on_click: Box<dyn Fn(Option<Anchor>) + Send + Sync>,
     pub on_action: Box<dyn Fn(String, Action) + Send + Sync>,
 }
@@ -338,6 +341,7 @@ pub fn run(
     set_badge(&button, 0, variant.as_deref());
     let _delegate = setup_notifications();
     let notifications = _delegate.is_some();
+    updater::start();
 
     let (tx, rx) = mpsc::channel::<Command>();
     let timer_button = button.clone();
@@ -352,6 +356,7 @@ pub fn run(
         last_settings_check: std::time::Instant::now(),
     });
     let tick = RcBlock::new(move |_timer: NonNull<NSTimer>| {
+        updater::poll();
         let mut state = state.borrow_mut();
         let NotificationState {
             decisions,

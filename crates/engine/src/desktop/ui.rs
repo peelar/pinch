@@ -12,6 +12,14 @@ pub struct Launcher {
 }
 
 impl Launcher {
+    pub fn stop(&self) {
+        let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(mut process) = child.take() {
+            let _ = process.kill();
+            let _ = process.wait();
+        }
+    }
+
     pub fn prepare(&self) {
         let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
         Self::ensure_running(&mut child);
