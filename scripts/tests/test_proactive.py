@@ -93,6 +93,8 @@ class ProactiveTests(unittest.TestCase):
         attribution = process["agent"]
         self.assertEqual(attribution["harness"], "codex")
         decision = self.wait_for(lambda: self.snapshot()["decisions"])[0]
+        self.assertGreaterEqual(decision["quiet_since_ms"], process["started_at_ms"])
+        self.assertLess(decision["quiet_since_ms"], decision["created_at_ms"])
         self.assertIn("MB RAM", decision["reason"])
         self.assertIn("could be freed", decision["reason"])
         self.assertEqual(self.snapshot()["notifications"], "unavailable")

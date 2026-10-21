@@ -273,6 +273,9 @@ pub struct Decision {
     pub process_name: String,
     pub reason: String,
     pub created_at_ms: u64,
+    /// Last observed activity; older persisted decisions may not include it.
+    #[serde(default)]
+    pub quiet_since_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

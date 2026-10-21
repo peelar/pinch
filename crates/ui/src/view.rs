@@ -12,6 +12,7 @@ use pinch_proto::{
     Decision, DecisionAnswer, Origin, ProcessGroup, ProcessInfo, Request, Response, Status,
 };
 
+use crate::process_list::ProcessList;
 use crate::resources;
 use crate::theme::Theme;
 use pinch_proto::{NotificationStatus, SystemMetrics};
@@ -113,16 +114,9 @@ fn fetch_engine() -> Snapshot {
 
 /// Window height that fits the content, within sane bounds.
 pub fn height_for(snapshot: &Snapshot) -> f32 {
-    let managed = snapshot
-        .processes
-        .iter()
-        .filter(|p| p.origin == Origin::Managed)
-        .count() as f32;
-    let unmanaged = snapshot
-        .processes
-        .iter()
-        .filter(|p| p.origin == Origin::Unmanaged)
-        .count() as f32;
+    let list = ProcessList::new(&snapshot.processes, &snapshot.decisions);
+    let managed = list.managed.len() as f32;
+    let unmanaged = list.unmanaged.len() as f32;
     let mut h = 66.0 + 40.0 + 12.0; // header + footer + list margin
     if snapshot.onboarding {
         h += 150.0;
@@ -130,16 +124,17 @@ pub fn height_for(snapshot: &Snapshot) -> f32 {
     if snapshot.notifications == NotificationStatus::Disabled {
         h += 84.0;
     }
-    h += snapshot.decisions.len() as f32 * 154.0;
-    if managed + unmanaged == 0.0 {
+    if !list.stale.is_empty() {
+        h += 82.0 + list.stale.len() as f32 * 116.0;
+    }
+    if managed + unmanaged == 0.0 && list.stale.is_empty() {
         h += 150.0;
     }
     if managed > 0.0 {
-        let groups = snapshot
-            .processes
+        let groups = list
+            .managed
             .iter()
-            .filter(|p| p.origin == Origin::Managed)
-            .map(ProcessInfo::group)
+            .map(|(_, p)| p.group())
             .collect::<std::collections::BTreeSet<_>>()
             .len();
         h += 30.0 + groups as f32 * 32.0 + managed * 68.0;
@@ -147,12 +142,6 @@ pub fn height_for(snapshot: &Snapshot) -> f32 {
     if unmanaged > 0.0 {
         h += 34.0 + unmanaged * 68.0;
     }
-    h -= snapshot
-        .processes
-        .iter()
-        .filter(|p| !p.status.is_alive())
-        .count() as f32
-        * 15.0;
     h.clamp(240.0, 640.0)
 }
 
@@ -169,6 +158,7 @@ pub struct Popover {
     focus: FocusHandle,
     log_scroll: ScrollHandle,
     seen_active: bool,
+    answering: bool,
     confirm_stop: Option<ProcessInfo>,
     stop_details_open: bool,
 }
@@ -225,6 +215,7 @@ impl Popover {
             focus,
             log_scroll: ScrollHandle::new(),
             seen_active: false,
+            answering: false,
             confirm_stop: None,
             stop_details_open: false,
         }
@@ -471,70 +462,244 @@ impl Popover {
             )
     }
 
-    fn decision_card(
+    fn answer_decisions(
+        &mut self,
+        decisions: Vec<Decision>,
+        answer: DecisionAnswer,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.answering {
+            return;
+        }
+        self.answering = true;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let snapshot = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut errors = Vec::new();
+                    for decision in decisions {
+                        // A notification or renewed activity may have resolved this item.
+                        match request(&Request::Snapshot) {
+                            Ok(Response::Snapshot { decisions, .. })
+                                if !decisions.iter().any(|d| d.id == decision.id) =>
+                            {
+                                continue;
+                            }
+                            _ => {}
+                        }
+                        let error = match request(&Request::Answer {
+                            decision: decision.id,
+                            answer,
+                        }) {
+                            Ok(Response::Ok) => None,
+                            Ok(Response::Error { message }) => Some(message),
+                            Err(error) => Some(format!("{error:#}")),
+                            _ => Some("Unexpected response".into()),
+                        };
+                        if let Some(error) = error {
+                            errors.push(format!("{}: {error}", decision.process_name));
+                        }
+                    }
+                    let mut snapshot = fetch();
+                    if !errors.is_empty() {
+                        snapshot.error = Some(errors.join("; "));
+                    }
+                    snapshot
+                })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.answering = false;
+                this.apply(snapshot, None, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn decision_actions(
         &self,
-        decision: &Decision,
+        id: &str,
+        decisions: Vec<Decision>,
+        all: bool,
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let answer =
-            |label: &'static str, kind: DecisionAnswer, danger: bool, cx: &mut Context<Self>| {
-                let id = decision.id.clone();
-                button(
-                    SharedString::from(format!("{}-{label}", decision.id)),
-                    label,
-                    danger,
-                    theme,
-                )
-                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                    this.send(
-                        Request::Answer {
-                            decision: id.clone(),
-                            answer: kind,
-                        },
-                        window,
-                        cx,
-                    );
-                }))
-            };
+        let actions = [
+            (
+                if all { "Stop all" } else { "Stop" },
+                DecisionAnswer::Kill,
+                true,
+            ),
+            (
+                if all { "Keep all" } else { "Keep running" },
+                DecisionAnswer::Keep,
+                false,
+            ),
+            (
+                if all { "Snooze all 1h" } else { "Snooze 1h" },
+                DecisionAnswer::Snooze,
+                false,
+            ),
+        ];
+        div()
+            .flex()
+            .gap_2()
+            .children(actions.into_iter().map(|(label, answer, danger)| {
+                let decisions = decisions.clone();
+                button(format!("{id}-{label}"), label, danger, theme)
+                    .when(self.answering, |button| {
+                        button.opacity(0.5).cursor_default()
+                    })
+                    .when(!self.answering, |button| {
+                        button.on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.answer_decisions(decisions.clone(), answer, window, cx);
+                        }))
+                    })
+            }))
+    }
+
+    fn stale_section(
+        &self,
+        list: &ProcessList<'_>,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let summary = if list.stale.iter().all(|(p, _)| p.metrics.is_none()) {
+            format!("{} processes", list.stale.len())
+        } else {
+            format!("~{} to free", bytes(list.stale_ram()))
+        };
         div()
             .mx_3()
+            .mt_3()
             .mb_2()
-            .p_3()
             .rounded_lg()
-            .border_1()
-            .border_color(theme.stale)
             .bg(theme.card)
-            .flex()
-            .flex_col()
-            .gap_2()
+            .border_l_2()
+            .border_color(theme.stale)
             .child(
                 div()
+                    .px_3()
+                    .pt_3()
+                    .pb_2()
                     .flex()
-                    .items_center()
+                    .flex_col()
                     .gap_2()
-                    .child(dot(theme.stale))
                     .child(
                         div()
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("Still need {}?", decision.process_name)),
-                    ),
+                            .flex()
+                            .justify_between()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme.stale)
+                                    .child(format!("Stale · {}", list.stale.len())),
+                            )
+                            .child(
+                                div()
+                                    .font_family(MONO)
+                                    .text_size(px(11.0))
+                                    .text_color(theme.text)
+                                    .child(summary),
+                            ),
+                    )
+                    .child(self.decision_actions(
+                        "stale-all",
+                        list.stale.iter().map(|(_, d)| (*d).clone()).collect(),
+                        true,
+                        theme,
+                        cx,
+                    )),
             )
-            .child(
+            .children(list.stale.iter().map(|(process, decision)| {
+                let name = process.name.clone();
+                let group = process.group();
+                let workspace = process.repo.as_deref().unwrap_or(&process.cwd);
+                let workspace = std::path::Path::new(workspace)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| workspace.to_string());
+                let quiet = decision.quiet_since_ms.map_or_else(
+                    || "No recent activity observed".into(),
+                    |since| format!("Quiet for {}", duration(now_ms().saturating_sub(since))),
+                );
+                let port = process
+                    .ports
+                    .first()
+                    .map(|p| format!(" · :{p}"))
+                    .unwrap_or_default();
+                let memory = process
+                    .metrics
+                    .map(|m| format!("~{}", bytes(m.rss_bytes)))
+                    .unwrap_or_default();
                 div()
-                    .text_size(px(12.0))
-                    .text_color(theme.muted)
-                    .child(decision.reason.clone()),
-            )
-            .child(
-                div()
+                    .id(SharedString::from(format!("stale-{}", process.id.0)))
+                    .px_3()
+                    .py_2()
                     .flex()
-                    .gap_2()
-                    .child(answer("Stop", DecisionAnswer::Kill, true, cx))
-                    .child(answer("Keep running", DecisionAnswer::Keep, false, cx))
-                    .child(answer("Snooze 1h", DecisionAnswer::Snooze, false, cx)),
-            )
+                    .flex_col()
+                    .gap_1()
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.open_logs(name.clone(), window, cx);
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(dot(theme.stale))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(process.name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .font_family(MONO)
+                                    .text_size(px(12.0))
+                                    .child(memory),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "stale-context-{}",
+                                process.id.0
+                            )))
+                            .truncate()
+                            .text_size(px(11.0))
+                            .text_color(theme.faint)
+                            .child(format!("{workspace} · {}{port}", process.kind.label()))
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| AgentGroupDetails(group.clone())).into()
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(theme.muted)
+                            .child(quiet),
+                    )
+                    .child(self.decision_actions(
+                        &decision.id,
+                        vec![(*decision).clone()],
+                        false,
+                        theme,
+                        cx,
+                    ))
+            }))
     }
 
     fn process_row(
@@ -588,7 +753,8 @@ impl Popover {
             (Some(port), _) => format!(":{port}"),
             (None, Status::Exited { code: Some(c) }) => format!("exit {c}"),
             (None, Status::Exited { code: None }) => "stopped".into(),
-            _ => "starting".into(),
+            _ if p.metrics.is_none() => "starting".into(),
+            _ => String::new(),
         };
         let right_bottom = match (alive, p.metrics) {
             (true, Some(m)) => format!(
@@ -713,42 +879,9 @@ impl Popover {
     }
 
     fn list(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        let mut managed: Vec<(usize, &ProcessInfo)> = self
-            .snapshot
-            .processes
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| p.origin == Origin::Managed)
-            .collect();
-        let mut unmanaged: Vec<(usize, &ProcessInfo)> = self
-            .snapshot
-            .processes
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| p.origin == Origin::Unmanaged)
-            .collect();
-
-        let by_resources = |a: &(usize, &ProcessInfo), b: &(usize, &ProcessInfo)| {
-            let a = a.1;
-            let b = b.1;
-            b.status
-                .is_alive()
-                .cmp(&a.status.is_alive())
-                .then_with(|| {
-                    let a_cpu = a.metrics.as_ref().map_or(0.0, |m| m.cpu_percent);
-                    let b_cpu = b.metrics.as_ref().map_or(0.0, |m| m.cpu_percent);
-                    b_cpu.total_cmp(&a_cpu)
-                })
-                .then_with(|| {
-                    let a_ram = a.metrics.as_ref().map_or(0, |m| m.rss_bytes);
-                    let b_ram = b.metrics.as_ref().map_or(0, |m| m.rss_bytes);
-                    b_ram.cmp(&a_ram)
-                })
-                .then_with(|| a.name.cmp(&b.name))
-                .then_with(|| a.id.0.cmp(&b.id.0))
-        };
-        managed.sort_by(by_resources);
-        unmanaged.sort_by(by_resources);
+        let list = ProcessList::new(&self.snapshot.processes, &self.snapshot.decisions);
+        let managed = &list.managed;
+        let unmanaged = &list.unmanaged;
 
         if let Some(process) = &self.confirm_stop {
             let confirmed = process.clone();
@@ -852,8 +985,8 @@ impl Popover {
                         })),
             );
         }
-        for decision in &self.snapshot.decisions {
-            body = body.child(self.decision_card(decision, theme, cx));
+        if !list.stale.is_empty() {
+            body = body.child(self.stale_section(&list, theme, cx));
         }
         if let Some(error) = &self.snapshot.error {
             body = body.child(
@@ -867,6 +1000,7 @@ impl Popover {
         }
         if managed.is_empty()
             && unmanaged.is_empty()
+            && list.stale.is_empty()
             && self.snapshot.error.is_none()
             && !self.snapshot.loading
         {
@@ -903,7 +1037,7 @@ impl Popover {
         if !managed.is_empty() {
             body = body.child(section_label("MANAGED", theme));
             let mut groups = std::collections::BTreeMap::<_, Vec<_>>::new();
-            for (i, p) in managed {
+            for &(i, p) in managed {
                 groups.entry(p.group()).or_default().push((i, p));
             }
             for (key, entries) in groups {
@@ -915,7 +1049,7 @@ impl Popover {
         }
         if !unmanaged.is_empty() {
             body = body.child(section_label("RUNNING OUTSIDE PINCH", theme));
-            for (i, p) in unmanaged {
+            for &(i, p) in unmanaged {
                 body = body.child(self.process_row(i, p, theme, cx));
             }
         }

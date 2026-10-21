@@ -680,6 +680,7 @@ impl Engine {
                         memory_estimate(entry.info.metrics)
                     ),
                     created_at_ms: now,
+                    quiet_since_ms: Some(last_activity),
                 };
                 inner.counter = seq;
                 inner.entries[i].info.status = Status::Stale;
