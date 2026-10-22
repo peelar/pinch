@@ -213,8 +213,21 @@ TCP connections, process-tree CPU usage of at least 5%, and `ensure` reuse each
 reset the quiet interval. Connections and metrics are sampled every two seconds,
 so brief requests may be missed. RAM estimates use process-tree RSS.
 
-Stop, Keep running, and Snooze 1h are available through notifications and the
-inbox. Keep lasts until the process restarts. Decisions and answers persist across
+The popover shows only live processes. Pending cleanup decisions appear once in
+its **Stale** section, above the regular workspace groups, ordered by estimated
+reclaimable RAM. A subtle heading shows the memory total and a single Stop all
+action; indented rows open their logs, where individual stop controls remain.
+Stop all applies to the decisions listed when clicked; new
+suggestions are not included. Each answer rechecks activity; stopping also
+revalidates process identity.
+Stopped processes leave the list immediately; their history and logs remain
+available through the CLI.
+
+Stop all in the Stale section resolves the same decisions as Stop in
+notifications and `pinch inbox`. Keep running remains available through
+notifications and the CLI. Renewed activity removes the suggestion
+and its notification and returns the process to its regular workspace group.
+Keep lasts until the process restarts. Decisions and answers persist across
 engine updates; restored decisions do not produce duplicate banners. Processes
 without a pending decision receive a fresh observation interval after startup.
 Discovered listeners never receive automatic stop suggestions.

@@ -3,6 +3,7 @@
 //! See DEVELOPMENT.md.
 
 mod icons;
+mod process_list;
 mod resources;
 mod theme;
 mod view;

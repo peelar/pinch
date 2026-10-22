@@ -14,7 +14,7 @@ still need it.
 - **One server is enough.** Agents reuse existing servers instead of starting duplicates.
 - **Know what's running.** Ports, logs, CPU, memory, and agent attribution in
   your menu bar.
-- **Clean up on your terms.** Stop, keep running, or snooze. Your servers survive
+- **Clean up on your terms.** Stop unused processes or keep them running. Your servers survive
   Pinch updates and restarts.
 
 ## Get Pinch

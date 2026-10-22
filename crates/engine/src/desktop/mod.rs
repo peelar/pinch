@@ -49,7 +49,6 @@ pub fn run(runtime: EngineRuntime) -> Result<()> {
             let answer = match action {
                 Action::Kill => DecisionAnswer::Kill,
                 Action::Keep => DecisionAnswer::Keep,
-                Action::Snooze => DecisionAnswer::Snooze,
             };
             let engine = Arc::clone(&action_engine);
             std::thread::spawn(move || {
