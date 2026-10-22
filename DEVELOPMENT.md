@@ -51,6 +51,52 @@ stop any test servers through the preview CLI before finishing. Temporary UI
 state, such as the selected log view, resets when the UI restarts. The preview
 does not exercise menu bar, notification, signing, or packaging behavior.
 
+## Screenshot and interaction fixtures
+
+Launch the installed app's real UI with disposable sample data:
+
+```sh
+python3 scripts/fixture.py
+```
+
+Use a bundle built from this checkout so its UI and fixture protocol match.
+The default scene has one Stale process, a Managed workspace, an Unrecognized
+server, and two Recognized processes totaling 210 MiB. Expand Recognized, hover
+rows, open logs or Configuration, and try recognize, undo, Stop, and Stop all.
+Actions change the sample data; restarting the command resets it.
+
+The runner starts a fixture socket in a temporary `PINCH_HOME` and launches the
+bundled `pinch-ui --dev`, which stays open on blur. It never starts the real engine,
+signals fixture PIDs, or changes installed state. Pressing Escape in the window or
+Ctrl-C stops the session and removes its temporary files. The regular app can
+keep running alongside it. This exercises the real UI and RPC client with a fake
+engine; it does not exercise process discovery, actual termination, native
+notifications, or Sparkle.
+
+```sh
+python3 scripts/fixture.py --app dist/Pinch.app
+python3 scripts/fixture.py --scenario empty
+python3 scripts/fixture.py --scenario notifications-disabled
+python3 scripts/fixture.py --scenario updates-available
+```
+
+For native automation, use a named fixture bundle so tools can select its window
+separately from the running regular app:
+
+```sh
+PROFILE=debug scripts/bundle.sh --variant fixture
+python3 scripts/fixture.py --app "dist/Pinch Fixture.app"
+```
+
+`--serve-only` prints the temporary `PINCH_HOME` without opening a window, for
+CLI or socket tests. Keep it running and use the printed directory with the
+bundled CLI, for example `PINCH_HOME=/tmp/pinch-fixture-… pinch ps --json`.
+Add `--verbose` to print the request types received from the UI.
+The checked-in snapshot and logs live in `scripts/fixtures/process-list.json`.
+Timestamps are rebased when read so uptime and quiet durations stay consistent
+across screenshots. macOS screenshot capture still requires Screen Recording
+access in the capture tool.
+
 ## Build and install the app
 
 ```sh
@@ -205,6 +251,23 @@ listeners have separate controls. A runtime name or port does not establish
 that a listener is a dev server. Discovered termination requires a separate
 identity confirmation and rechecks PID/start time before sending SIGTERM to that
 PID alone; it never signals the group or escalates to SIGKILL.
+
+### Recognized processes
+
+Every **Unrecognized** row can be recognized. Processes stay visible and stoppable
+in the muted **Recognized** section at the bottom. It starts collapsed with a
+process count and RAM total; click to expand. Recognized processes still count
+toward the header's running count and RAM total.
+
+For an installed app directly inside `/Applications` or `~/Applications`, the rule
+covers its future processes too. Configuration lists these apps. Processes inside
+a repository get a rule for that running process instead, so recognizing a terminal
+or editor does not cover the projects it runs. Runtime bundles such as the system
+`Python.app` also get a process rule. Process rules match PID and start time;
+a restarted process is unrecognized again. Rules live in `recognized.json`, and
+survive engine updates. Undo recognition from the row, or remove an app rule in
+Configuration. Recognizing never hides processes or changes cleanup decisions;
+only processes started through Pinch can become stale.
 
 ### Cleanup suggestions
 

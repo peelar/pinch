@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use pinch_client::{home, logs_dir, now_ms};
 use pinch_proto::{
-    Decision, DecisionAnswer, Metrics, Origin, ProcessId, ProcessInfo, ProcessKind, Spawn, Status,
-    SystemMetrics,
+    Decision, DecisionAnswer, Metrics, Origin, ProcessId, ProcessInfo, ProcessKind, RecognizedApp,
+    Spawn, Status, SystemMetrics,
 };
 use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -78,6 +78,9 @@ struct Inner {
     entries: Vec<Entry>,
     decisions: Vec<Decision>,
     unmanaged: Vec<ProcessInfo>,
+    recognized: Vec<RecognizedApp>,
+    recognized_processes: Vec<ProcessId>,
+    recognized_path: PathBuf,
     sys: System,
     system_metrics: SystemMetrics,
     cpu_totals: HashMap<u32, u64>,
@@ -151,11 +154,16 @@ impl Engine {
             })
             .collect();
 
+        let recognized_path = home().join("recognized.json");
+        let (recognized, recognized_processes) = load_recognized(&recognized_path);
         let mut inner = Inner {
             entries,
             last_decisions: decisions.iter().map(|d| d.id.clone()).collect(),
             decisions,
             unmanaged: Vec::new(),
+            recognized,
+            recognized_processes,
+            recognized_path,
             sys,
             system_metrics: SystemMetrics::default(),
             cpu_totals: HashMap::new(),
@@ -228,12 +236,95 @@ impl Engine {
         self.spawn_locked(&mut inner, spawn)
     }
 
-    pub fn snapshot(&self) -> (Vec<ProcessInfo>, Vec<Decision>, SystemMetrics) {
+    pub fn snapshot(
+        &self,
+    ) -> (
+        Vec<ProcessInfo>,
+        Vec<Decision>,
+        SystemMetrics,
+        Vec<RecognizedApp>,
+    ) {
         let inner = self.lock();
         let mut processes: Vec<ProcessInfo> =
             inner.entries.iter().map(|e| e.info.clone()).collect();
-        processes.extend(inner.unmanaged.iter().cloned());
-        (processes, inner.decisions.clone(), inner.system_metrics)
+        processes.extend(inner.unmanaged.iter().cloned().map(|mut p| {
+            p.recognized =
+                is_recognized(&inner.recognized, &p) || inner.recognized_processes.contains(&p.id);
+            p
+        }));
+        (
+            processes,
+            inner.decisions.clone(),
+            inner.system_metrics,
+            inner.recognized.clone(),
+        )
+    }
+
+    pub fn recognize(&self, reviewed: &ProcessInfo) -> Result<()> {
+        let mut inner = self.lock();
+        let info = inner
+            .unmanaged
+            .iter()
+            .find(|p| p.id == reviewed.id)
+            .ok_or_else(|| anyhow!("discovered process is no longer available; review it again"))?;
+        let mut apps = inner.recognized.clone();
+        let mut processes = inner.recognized_processes.clone();
+        if let Some(path) = info.recognizable_app() {
+            if !apps.iter().any(|app| app.path == path) {
+                apps.push(RecognizedApp {
+                    path: path.to_string(),
+                    recognized_at_ms: now_ms(),
+                });
+            }
+        } else if !processes.contains(&info.id) {
+            processes.push(info.id.clone());
+        }
+        save_recognized(&inner.recognized_path, &apps, &processes)?;
+        inner.recognized = apps;
+        inner.recognized_processes = processes;
+        Ok(())
+    }
+
+    pub fn forget(&self, path: &str) -> Result<()> {
+        let mut inner = self.lock();
+        let apps: Vec<_> = inner
+            .recognized
+            .iter()
+            .filter(|app| app.path != path)
+            .cloned()
+            .collect();
+        if apps.len() == inner.recognized.len() {
+            bail!("'{path}' is not a recognized app");
+        }
+        save_recognized(&inner.recognized_path, &apps, &inner.recognized_processes)?;
+        inner.recognized = apps;
+        Ok(())
+    }
+
+    pub fn unrecognize(&self, reviewed: &ProcessInfo) -> Result<()> {
+        let mut inner = self.lock();
+        let info = inner
+            .unmanaged
+            .iter()
+            .find(|p| p.id == reviewed.id)
+            .ok_or_else(|| anyhow!("discovered process is no longer available; review it again"))?;
+        let app = info.recognizable_app();
+        let apps: Vec<_> = inner
+            .recognized
+            .iter()
+            .filter(|a| Some(a.path.as_str()) != app)
+            .cloned()
+            .collect();
+        let processes: Vec<_> = inner
+            .recognized_processes
+            .iter()
+            .filter(|id| **id != info.id)
+            .cloned()
+            .collect();
+        save_recognized(&inner.recognized_path, &apps, &processes)?;
+        inner.recognized = apps;
+        inner.recognized_processes = processes;
+        Ok(())
     }
 
     pub fn stop(&self, target: &str) -> Result<ProcessInfo> {
@@ -487,6 +578,7 @@ impl Engine {
             name: spawn.name.clone(),
             kind: ProcessKind::from_exe(&program),
             origin: Origin::Managed,
+            recognized: false,
             status: Status::Running,
             command: spawn.command.clone(),
             cwd: spawn.cwd.clone(),
@@ -761,6 +853,7 @@ impl Engine {
                 name: format!("{label}:{}", ports[0]),
                 kind,
                 origin: Origin::Unmanaged,
+                recognized: false,
                 status: Status::Running,
                 command,
                 cwd,
@@ -783,6 +876,23 @@ impl Engine {
         }
         unmanaged.sort_by(|a, b| a.ports.cmp(&b.ports));
         inner.unmanaged = unmanaged;
+        let sys = &inner.sys;
+        let live_recognized: Vec<_> = inner
+            .recognized_processes
+            .iter()
+            .filter(|id| {
+                let mut parts = id.0.split(':');
+                let _ = parts.next();
+                let pid = parts.next().and_then(|pid| pid.parse::<u32>().ok());
+                let start = parts.next().and_then(|start| start.parse::<u64>().ok());
+                pid.zip(start).is_some_and(|(pid, start)| {
+                    sys.process(Pid::from_u32(pid))
+                        .is_some_and(|process| process.start_time() == start)
+                })
+            })
+            .cloned()
+            .collect();
+        inner.recognized_processes = live_recognized;
 
         sync_attention(&self.hooks, &mut inner);
         if changed
@@ -826,6 +936,44 @@ fn save(inner: &Inner) {
     {
         let _ = fs::rename(&tmp, &path);
     }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum RecognizedRules {
+    Legacy(Vec<RecognizedApp>),
+    Current {
+        apps: Vec<RecognizedApp>,
+        processes: Vec<ProcessId>,
+    },
+}
+
+fn load_recognized(path: &Path) -> (Vec<RecognizedApp>, Vec<ProcessId>) {
+    match fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    {
+        Some(RecognizedRules::Legacy(apps)) => (apps, vec![]),
+        Some(RecognizedRules::Current { apps, processes }) => (apps, processes),
+        None => (vec![], vec![]),
+    }
+}
+
+fn save_recognized(path: &Path, apps: &[RecognizedApp], processes: &[ProcessId]) -> Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    let rules = RecognizedRules::Current {
+        apps: apps.to_vec(),
+        processes: processes.to_vec(),
+    };
+    fs::write(&tmp, serde_json::to_vec_pretty(&rules)?)
+        .and_then(|()| fs::rename(&tmp, path))
+        .with_context(|| format!("could not save recognition rules to {}", path.display()))
+}
+
+fn is_recognized(recognized: &[RecognizedApp], process: &ProcessInfo) -> bool {
+    process
+        .recognizable_app()
+        .is_some_and(|path| recognized.iter().any(|app| app.path == path))
 }
 
 fn sync_attention(hooks: &Hooks, inner: &mut Inner) {
@@ -1084,6 +1232,9 @@ mod identity_tests {
                 entries: vec![],
                 decisions: vec![],
                 unmanaged: vec![info],
+                recognized: vec![],
+                recognized_processes: vec![],
+                recognized_path: PathBuf::new(),
                 sys: System::new(),
                 system_metrics: SystemMetrics::default(),
                 cpu_totals: HashMap::new(),
@@ -1153,6 +1304,95 @@ mod identity_tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    fn discovered(
+        pid: u32,
+        executable: &str,
+        launcher_app: &str,
+        repo: Option<&str>,
+    ) -> ProcessInfo {
+        serde_json::from_value(serde_json::json!({
+            "id": format!("pid:{pid}:1"), "name": format!("node:{pid}"), "kind": "node",
+            "origin": "unmanaged", "status": {"state": "running"}, "command": [], "cwd": "/",
+            "executable": executable, "launcher_app": launcher_app, "repo": repo,
+            "branch": null, "owner": null, "pid": pid, "ports": [pid as u16],
+            "started_at_ms": 1000, "last_output_ms": null, "log_path": null, "metrics": null
+        }))
+        .unwrap()
+    }
+
+    fn engine_with(unmanaged: Vec<ProcessInfo>, recognized_path: PathBuf) -> Engine {
+        Engine {
+            inner: Mutex::new(Inner {
+                entries: vec![],
+                decisions: vec![],
+                unmanaged,
+                recognized: vec![],
+                recognized_processes: vec![],
+                recognized_path,
+                sys: System::new(),
+                system_metrics: SystemMetrics::default(),
+                cpu_totals: HashMap::new(),
+                system_sampled_at: None,
+                counter: 0,
+                last_decisions: Vec::new(),
+                last_activity_saved_ms: 0,
+            }),
+            cfg: Config {
+                stale_after: Duration::from_secs(3600),
+            },
+            hooks: Hooks::default(),
+        }
+    }
+
+    #[test]
+    fn recognition_keeps_processes_visible_and_scopes_app_and_process_rules() {
+        let dir = std::env::temp_dir().join(format!("pinch-recognized-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("recognized.json");
+        let raycast = "/Applications/Raycast.app";
+        let backend = discovered(7265, "/rc/node-v22/bin/node", raycast, None);
+        let project = discovered(3000, "/opt/homebrew/bin/node", raycast, Some("/repos/web"));
+        let engine = engine_with(vec![backend.clone(), project.clone()], path.clone());
+        engine.recognize(&project).unwrap();
+        engine.recognize(&backend).unwrap();
+        engine.recognize(&backend).unwrap();
+        assert_eq!(engine.snapshot().0.len(), 2);
+        assert!(engine.snapshot().0.iter().all(|p| p.recognized));
+        let (apps, processes) = load_recognized(&path);
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].path, raycast);
+        assert_eq!(processes, [project.id.clone()]);
+        let restarted_app = discovered(8123, "/rc/node-v24/bin/node", raycast, None);
+        let mut restarted_project = project.clone();
+        restarted_project.id = ProcessId("pid:3000:2".into());
+        let restored = engine_with(vec![restarted_app, restarted_project], path.clone());
+        restored.lock().recognized = apps;
+        restored.lock().recognized_processes = processes;
+        let snapshot = restored.snapshot().0;
+        assert!(snapshot[0].recognized);
+        assert!(!snapshot[1].recognized);
+        engine.unrecognize(&project).unwrap();
+        assert!(!engine.snapshot().0[1].recognized);
+        engine.unrecognize(&backend).unwrap();
+        assert!(!engine.snapshot().0[0].recognized);
+        assert!(engine.snapshot().3.is_empty());
+        assert_eq!(load_recognized(&path), (vec![], vec![]));
+        let missing = discovered(9999, "/node", raycast, None);
+        assert!(engine.recognize(&missing).is_err());
+        assert!(engine.unrecognize(&missing).is_err());
+        fs::write(
+            &path,
+            serde_json::to_vec(&vec![RecognizedApp {
+                path: raycast.into(),
+                recognized_at_ms: 1,
+            }])
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(load_recognized(&path).0[0].path, raycast);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

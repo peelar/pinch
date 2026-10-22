@@ -1,0 +1,217 @@
+{
+  "epoch_ms": 1800000000000,
+  "snapshot": {
+    "type": "snapshot",
+    "processes": [
+      {
+        "id": "fixture-docs",
+        "name": "docs",
+        "kind": "pnpm",
+        "origin": "managed",
+        "recognized": false,
+        "status": {
+          "state": "stale"
+        },
+        "command": [
+          "pnpm",
+          "dev"
+        ],
+        "cwd": "/workspaces/website",
+        "executable": "/opt/homebrew/bin/pnpm",
+        "app_bundle": null,
+        "launcher_app": null,
+        "repo": "/workspaces/website",
+        "branch": "main",
+        "owner": null,
+        "pid": 41001,
+        "ports": [
+          3001
+        ],
+        "started_at_ms": 1799989200000,
+        "last_output_ms": 1799989200000,
+        "log_path": null,
+        "metrics": {
+          "cpu_percent": 0,
+          "rss_bytes": 440401920
+        },
+        "agent": {
+          "harness": "codex",
+          "thread_id": null,
+          "agent_id": null
+        }
+      },
+      {
+        "id": "fixture-web",
+        "name": "web",
+        "kind": "pnpm",
+        "origin": "managed",
+        "recognized": false,
+        "status": {
+          "state": "running"
+        },
+        "command": [
+          "pnpm",
+          "dev"
+        ],
+        "cwd": "/workspaces/storefront",
+        "executable": "/opt/homebrew/bin/pnpm",
+        "app_bundle": null,
+        "launcher_app": null,
+        "repo": "/workspaces/storefront",
+        "branch": "main",
+        "owner": null,
+        "pid": 41002,
+        "ports": [
+          3000
+        ],
+        "started_at_ms": 1799998200000,
+        "last_output_ms": 1799998200000,
+        "log_path": null,
+        "metrics": {
+          "cpu_percent": 2.4,
+          "rss_bytes": 325058560
+        },
+        "agent": {
+          "harness": "codex",
+          "thread_id": null,
+          "agent_id": null
+        }
+      },
+      {
+        "id": "pid:41003:1800000000",
+        "name": "api:8000",
+        "kind": "python",
+        "origin": "unmanaged",
+        "recognized": false,
+        "status": {
+          "state": "running"
+        },
+        "command": [
+          "python",
+          "server"
+        ],
+        "cwd": "/workspaces/api",
+        "executable": "/usr/bin/python3",
+        "app_bundle": null,
+        "launcher_app": null,
+        "repo": "/workspaces/api",
+        "branch": "main",
+        "owner": null,
+        "pid": 41003,
+        "ports": [
+          8000
+        ],
+        "started_at_ms": 1799998200000,
+        "last_output_ms": null,
+        "log_path": null,
+        "metrics": {
+          "cpu_percent": 1.1,
+          "rss_bytes": 152043520
+        },
+        "agent": null
+      },
+      {
+        "id": "pid:41004:1800000000",
+        "name": "Raycast:7265",
+        "kind": "node",
+        "origin": "unmanaged",
+        "recognized": true,
+        "status": {
+          "state": "running"
+        },
+        "command": [
+          "node",
+          "server"
+        ],
+        "cwd": "/",
+        "executable": "/opt/homebrew/bin/node",
+        "app_bundle": null,
+        "launcher_app": "/Applications/Raycast.app",
+        "repo": null,
+        "branch": null,
+        "owner": null,
+        "pid": 41004,
+        "ports": [
+          7265
+        ],
+        "started_at_ms": 1799998200000,
+        "last_output_ms": null,
+        "log_path": null,
+        "metrics": {
+          "cpu_percent": 0,
+          "rss_bytes": 188743680
+        },
+        "agent": null
+      },
+      {
+        "id": "pid:41005:1800000000",
+        "name": "preview:4173",
+        "kind": "node",
+        "origin": "unmanaged",
+        "recognized": true,
+        "status": {
+          "state": "running"
+        },
+        "command": [
+          "node",
+          "server"
+        ],
+        "cwd": "/workspaces/preview",
+        "executable": "/opt/homebrew/bin/node",
+        "app_bundle": null,
+        "launcher_app": null,
+        "repo": "/workspaces/preview",
+        "branch": "main",
+        "owner": null,
+        "pid": 41005,
+        "ports": [
+          4173
+        ],
+        "started_at_ms": 1799998200000,
+        "last_output_ms": null,
+        "log_path": null,
+        "metrics": {
+          "cpu_percent": 0,
+          "rss_bytes": 31457280
+        },
+        "agent": null
+      }
+    ],
+    "decisions": [
+      {
+        "id": "fixture-stale-docs",
+        "process": "fixture-docs",
+        "process_name": "docs",
+        "reason": "Quiet for 2 hours; about 420 MiB could be freed.",
+        "created_at_ms": 1799999400000,
+        "quiet_since_ms": 1799992200000
+      }
+    ],
+    "system": {
+      "cpu_percent": 22,
+      "memory_used_bytes": 8589934592,
+      "memory_total_bytes": 17179869184,
+      "memory_available_bytes": 8589934592,
+      "swap_used_bytes": 0,
+      "sampled_at_ms": 1800000000000
+    },
+    "notifications": "enabled",
+    "updates": {
+      "enabled": false,
+      "can_check": false,
+      "automatic_checks": false,
+      "available_version": null
+    },
+    "recognized": [
+      {
+        "path": "/Applications/Raycast.app",
+        "recognized_at_ms": 1799996400000
+      }
+    ]
+  },
+  "logs": {
+    "docs": "> docs@1.0.0 dev\n> vite --port 3001\n\n  VITE ready in 180 ms\n  \u279c  Local: http://localhost:3001/\n",
+    "web": "> storefront@1.0.0 dev\n> vite\n\n  VITE ready in 240 ms\n  \u279c  Local: http://localhost:3000/\n"
+  },
+  "protocol_version": 7
+}

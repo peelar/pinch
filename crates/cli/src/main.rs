@@ -484,6 +484,7 @@ fn print_table(processes: &[ProcessInfo]) {
     );
     for p in processes {
         let status = match (&p.origin, &p.status) {
+            (Origin::Unmanaged, _) if p.recognized => "recognized".to_string(),
             (Origin::Unmanaged, _) => "foreign".to_string(),
             (_, Status::Running) => "running".to_string(),
             (_, Status::Stale) => "stale".to_string(),

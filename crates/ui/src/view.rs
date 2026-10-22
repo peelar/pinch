@@ -9,7 +9,8 @@ use gpui::{
 };
 use pinch_client::{now_ms, onboarding, request, request_autostart};
 use pinch_proto::{
-    Decision, DecisionAnswer, Origin, ProcessGroup, ProcessInfo, Request, Response, Status,
+    Decision, DecisionAnswer, Origin, ProcessGroup, ProcessInfo, RecognizedApp, Request, Response,
+    Status, app_name,
 };
 
 use crate::process_list::ProcessList;
@@ -19,7 +20,6 @@ use pinch_proto::{NotificationStatus, SystemMetrics};
 
 pub const WIDTH: f32 = 400.0;
 const LOG_HEIGHT: f32 = 520.0;
-const CONFIGURATION_HEIGHT: f32 = 280.0;
 const MONO: &str = "Menlo";
 
 #[derive(Default, Clone)]
@@ -30,6 +30,7 @@ pub struct Snapshot {
     pub updates: pinch_proto::UpdateStatus,
     pub processes: Vec<ProcessInfo>,
     pub decisions: Vec<Decision>,
+    pub recognized: Vec<RecognizedApp>,
     pub error: Option<String>,
     /// Offer to install the pinch skill into detected agent harnesses.
     pub onboarding: bool,
@@ -90,6 +91,7 @@ fn fetch_engine() -> Snapshot {
             system,
             notifications,
             updates,
+            recognized,
         }) => Snapshot {
             loading: false,
             system,
@@ -97,6 +99,7 @@ fn fetch_engine() -> Snapshot {
             updates,
             processes,
             decisions,
+            recognized,
             error: None,
             onboarding: false,
         },
@@ -114,6 +117,10 @@ fn fetch_engine() -> Snapshot {
 
 /// Window height that fits the content, within sane bounds.
 pub fn height_for(snapshot: &Snapshot) -> f32 {
+    list_height(snapshot, false)
+}
+
+fn list_height(snapshot: &Snapshot, recognized_open: bool) -> f32 {
     let list = ProcessList::new(&snapshot.processes, &snapshot.decisions);
     let managed = list.managed.len() as f32;
     let unmanaged = list.unmanaged.len() as f32;
@@ -127,7 +134,7 @@ pub fn height_for(snapshot: &Snapshot) -> f32 {
     if !list.stale.is_empty() {
         h += 38.0 + list.stale.len() as f32 * 60.0;
     }
-    if managed + unmanaged == 0.0 && list.stale.is_empty() {
+    if managed + unmanaged == 0.0 && list.stale.is_empty() && list.recognized.is_empty() {
         h += 150.0;
     }
     if managed > 0.0 {
@@ -142,7 +149,22 @@ pub fn height_for(snapshot: &Snapshot) -> f32 {
     if unmanaged > 0.0 {
         h += 34.0 + unmanaged * 68.0;
     }
+    if !list.recognized.is_empty() {
+        h += 34.0;
+        if recognized_open {
+            h += list.recognized.len() as f32 * 68.0;
+        }
+    }
     h.clamp(240.0, 640.0)
+}
+
+fn configuration_height(snapshot: &Snapshot) -> f32 {
+    let recognized = if snapshot.recognized.is_empty() {
+        0.0
+    } else {
+        72.0 + snapshot.recognized.len() as f32 * 40.0
+    };
+    (280.0 + recognized).min(640.0)
 }
 
 enum Screen {
@@ -161,6 +183,7 @@ pub struct Popover {
     answering: bool,
     confirm_stop: Option<ProcessInfo>,
     stop_details_open: bool,
+    recognized_open: bool,
 }
 
 impl Popover {
@@ -218,6 +241,7 @@ impl Popover {
             answering: false,
             confirm_stop: None,
             stop_details_open: false,
+            recognized_open: false,
         }
     }
 
@@ -228,7 +252,7 @@ impl Popover {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let old_height = height_for(&self.snapshot);
+        let old_height = list_height(&self.snapshot, self.recognized_open);
         self.resources.update(cx, |current, cx| {
             *current = snapshot.system;
             cx.notify();
@@ -240,10 +264,13 @@ impl Popover {
                 self.log_scroll.scroll_to_bottom();
             }
             (Screen::List, _) if self.confirm_stop.is_none() => {
-                let height = height_for(&self.snapshot);
+                let height = list_height(&self.snapshot, self.recognized_open);
                 if (height - old_height).abs() > 1.0 {
                     window.resize(size(px(WIDTH), px(height)));
                 }
+            }
+            (Screen::Configuration, _) => {
+                window.resize(size(px(WIDTH), px(configuration_height(&self.snapshot))));
             }
             _ => {}
         }
@@ -307,14 +334,20 @@ impl Popover {
 
     fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.screen = Screen::List;
-        window.resize(size(px(WIDTH), px(height_for(&self.snapshot))));
+        window.resize(size(
+            px(WIDTH),
+            px(list_height(&self.snapshot, self.recognized_open)),
+        ));
         cx.notify();
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if event.keystroke.key == "escape" {
             if self.confirm_stop.take().is_some() {
-                window.resize(size(px(WIDTH), px(height_for(&self.snapshot))));
+                window.resize(size(
+                    px(WIDTH),
+                    px(list_height(&self.snapshot, self.recognized_open)),
+                ));
                 cx.notify();
                 return;
             }
@@ -534,6 +567,8 @@ impl Popover {
             .then(|| format!("~{} to free", bytes(list.stale_ram())));
         let stop = div()
             .id("stop-stale")
+            .font_family(".SystemUIFont")
+            .font_weight(FontWeight::NORMAL)
             .px_2()
             .py_1()
             .rounded_md()
@@ -550,28 +585,18 @@ impl Popover {
                     }))
             });
         div()
-            .mt_2()
-            .mb_2()
             .child(
-                div()
-                    .px_4()
+                section_label(format!("STALE · {}", list.stale.len()), theme)
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .font_family(MONO)
-                            .text_size(px(10.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.faint)
-                            .child(format!("STALE · {}", list.stale.len())),
-                    )
+                    .child(div().flex_1())
                     .when_some(summary, |header, summary| {
                         header.child(
                             div()
                                 .font_family(MONO)
                                 .text_size(px(10.0))
+                                .font_weight(FontWeight::NORMAL)
                                 .text_color(theme.faint)
                                 .child(summary),
                         )
@@ -601,8 +626,7 @@ impl Popover {
                     .unwrap_or_default();
                 div()
                     .id(SharedString::from(format!("stale-{}", process.id.0)))
-                    .ml_6()
-                    .mr_3()
+                    .mx_2()
                     .px_2()
                     .py_2()
                     .rounded_md()
@@ -677,10 +701,14 @@ impl Popover {
     ) -> AnyElement {
         let managed = p.origin == Origin::Managed;
         let alive = p.status.is_alive();
-        let color = match &p.status {
-            Status::Running => theme.running,
-            Status::Stale => theme.stale,
-            Status::Exited { .. } => theme.stopped,
+        let color = if p.recognized {
+            theme.faint
+        } else {
+            match &p.status {
+                Status::Running => theme.running,
+                Status::Stale => theme.stale,
+                Status::Exited { .. } => theme.stopped,
+            }
         };
 
         let mut subtitle = vec![p.kind.label().to_string()];
@@ -759,7 +787,11 @@ impl Popover {
                             .truncate()
                             .text_size(px(13.0))
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(if alive { theme.text } else { theme.muted })
+                            .text_color(if alive && !p.recognized {
+                                theme.text
+                            } else {
+                                theme.muted
+                            })
                             .child(name.clone()),
                     )
                     .child(
@@ -791,24 +823,62 @@ impl Popover {
             });
 
         {
+            let recognize = (!managed).then(|| {
+                let process = p.clone();
+                let label = if p.recognized {
+                    p.recognizable_app()
+                        .map(|app| format!("Unrecognize {}", app_name(app)))
+                        .unwrap_or_else(|| "Unrecognize this process".into())
+                } else {
+                    p.recognizable_app()
+                        .map(|app| format!("Recognize {}", app_name(app)))
+                        .unwrap_or_else(|| "Recognize until this process exits".into())
+                };
+                icon_button(
+                    ("recognize", index),
+                    if p.recognized {
+                        "icons/undo.svg"
+                    } else {
+                        "icons/check.svg"
+                    },
+                    label,
+                    theme.muted,
+                    theme,
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.send(
+                        if process.recognized {
+                            Request::Unrecognize {
+                                process: Box::new(process.clone()),
+                            }
+                        } else {
+                            Request::Recognize {
+                                process: Box::new(process.clone()),
+                            }
+                        },
+                        window,
+                        cx,
+                    );
+                }))
+            });
             let process = p.clone();
-            let mut action = div()
-                .id((if alive { "stop" } else { "clear" }, index))
-                .w_5()
-                .h_5()
-                .rounded_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(px(11.0))
-                .text_color(theme.muted)
-                .hover(|s| s.bg(theme.hover).text_color(theme.danger))
-                .cursor_pointer()
-                .child("✕");
+            let stop = icon_button(
+                (if alive { "stop" } else { "clear" }, index),
+                "icons/x.svg",
+                match (alive, managed) {
+                    (false, _) => "Clear",
+                    (true, true) => "Stop",
+                    (true, false) => "Stop…",
+                },
+                theme.danger,
+                theme,
+            );
+            let mut actions = div().flex().flex_none().gap_1().children(recognize);
             if alive {
-                action = action.invisible().group_hover("row", |s| s.visible());
+                actions = actions.invisible().group_hover("row", |s| s.visible());
             }
-            row = row.child(action.on_click(cx.listener(
+            row = row.child(actions.child(stop.on_click(cx.listener(
                 move |this, _: &ClickEvent, window, cx| {
                     cx.stop_propagation();
                     if !managed {
@@ -832,7 +902,7 @@ impl Popover {
                         cx,
                     );
                 },
-            )));
+            ))));
         }
         if managed {
             row = row.cursor_pointer().on_click(cx.listener(
@@ -905,7 +975,10 @@ impl Popover {
                             button("cancel-stop", "Cancel", false, theme).on_click(cx.listener(
                                 |this, _: &ClickEvent, window, cx| {
                                     this.confirm_stop = None;
-                                    window.resize(size(px(WIDTH), px(height_for(&this.snapshot))));
+                                    window.resize(size(
+                                        px(WIDTH),
+                                        px(list_height(&this.snapshot, this.recognized_open)),
+                                    ));
                                     cx.notify();
                                 },
                             )),
@@ -914,7 +987,10 @@ impl Popover {
                             button("confirm-stop", "Stop this process", true, theme).on_click(
                                 cx.listener(move |this, _: &ClickEvent, window, cx| {
                                     this.confirm_stop = None;
-                                    window.resize(size(px(WIDTH), px(height_for(&this.snapshot))));
+                                    window.resize(size(
+                                        px(WIDTH),
+                                        px(list_height(&this.snapshot, this.recognized_open)),
+                                    ));
                                     this.send(
                                         Request::StopDiscovered {
                                             process: Box::new(confirmed.clone()),
@@ -966,6 +1042,7 @@ impl Popover {
         }
         if managed.is_empty()
             && unmanaged.is_empty()
+            && list.recognized.is_empty()
             && list.stale.is_empty()
             && self.snapshot.error.is_none()
             && !self.snapshot.loading
@@ -1014,9 +1091,42 @@ impl Popover {
             }
         }
         if !unmanaged.is_empty() {
-            body = body.child(section_label("RUNNING OUTSIDE PINCH", theme));
+            body = body.child(section_label("UNRECOGNIZED", theme));
             for &(i, p) in unmanaged {
                 body = body.child(self.process_row(i, p, theme, cx));
+            }
+        }
+        if !list.recognized.is_empty() {
+            let ram: u64 = list
+                .recognized
+                .iter()
+                .filter_map(|(_, p)| p.metrics)
+                .map(|m| m.rss_bytes)
+                .sum();
+            body = body.child(
+                section_label(
+                    format!("RECOGNIZED · {} · {}", list.recognized.len(), bytes(ram)),
+                    theme,
+                )
+                .id("recognized-toggle")
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(if self.recognized_open { "▾" } else { "▸" })
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.recognized_open = !this.recognized_open;
+                    window.resize(size(
+                        px(WIDTH),
+                        px(list_height(&this.snapshot, this.recognized_open)),
+                    ));
+                    cx.notify();
+                })),
+            );
+            if self.recognized_open {
+                for &(i, p) in &list.recognized {
+                    body = body.child(self.process_row(i, p, theme, cx));
+                }
             }
         }
         body.into_any_element()
@@ -1207,6 +1317,7 @@ impl Popover {
                     .child(div().text_size(px(14.0)).font_weight(FontWeight::SEMIBOLD).child("Configuration"))
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.back(window, cx)))))
             .child(div().px_4().py_3().flex().flex_col().gap_3()
+                .child(div().flex().flex_col().gap_1()
                 .child(div().flex().items_center().justify_between()
                     .child(div().text_size(px(13.0)).child("Automatic updates"))
                     .child(div().id("automatic-update-checks")
@@ -1227,12 +1338,12 @@ impl Popover {
                                 cx.notify();
                             })))
                         .when(!updates.enabled, |toggle| toggle.opacity(0.4))))
-                .child(div().text_size(px(12.0)).text_color(theme.muted)
+                .child(div().text_size(px(12.0)).text_color(theme.faint)
                     .child(if updates.enabled {
                         "Check for new versions automatically. Installing an update always asks for approval."
                     } else {
                         "Updates are unavailable in this build."
-                    }))
+                    })))
                 .when(updates.enabled, |body| body.child(
                     div().flex().child(button("configuration-check-updates", "Check for Updates…", false, theme)
                         .when(updates.can_check || updates.available_version.is_some(), |button| button.on_click(
@@ -1240,7 +1351,84 @@ impl Popover {
                         .when(!updates.can_check && updates.available_version.is_none(), |button| button.opacity(0.4)))))
                 .when_some(self.snapshot.error.clone(), |body, error| body.child(
                     div().text_size(px(12.0)).text_color(theme.danger).child(error))))
+            .when(!self.snapshot.recognized.is_empty(), |view| {
+                view.child(self.recognized_apps(theme, cx))
+            })
             .into_any_element()
+    }
+
+    fn recognized_apps(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("recognized-apps")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .pb_3()
+            .child(section_label("RECOGNIZED APPS", theme))
+            .child(
+                div()
+                    .px_4()
+                    .pb_1()
+                    .text_size(px(12.0))
+                    .text_color(theme.muted)
+                    .child("Expected apps stay visible in Recognized."),
+            )
+            .children(
+                self.snapshot
+                    .recognized
+                    .iter()
+                    .enumerate()
+                    .map(|(index, app)| {
+                        let path = app.path.clone();
+                        div()
+                            .mx_2()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .hover(|s| s.bg(theme.hover))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_size(px(13.0))
+                                            .child(app.name().to_string()),
+                                    )
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_size(px(11.0))
+                                            .text_color(theme.faint)
+                                            .child(app.path.clone()),
+                                    ),
+                            )
+                            .child(
+                                icon_button(
+                                    ("forget", index),
+                                    "icons/undo.svg",
+                                    format!("Unrecognize {}", app.name()),
+                                    theme.text,
+                                    theme,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _: &ClickEvent, window, cx| {
+                                        this.send(
+                                            Request::Forget { app: path.clone() },
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                )),
+                            )
+                    }),
+            )
     }
 
     fn configuration_button(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1260,11 +1448,11 @@ impl Popover {
                     .size(px(18.0))
                     .text_color(theme.muted),
             )
-            .tooltip(|_, cx| cx.new(|_| ConfigurationTooltip).into())
+            .tooltip(|_, cx| cx.new(|_| TextTooltip("Configuration".into())).into())
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 this.confirm_stop = None;
                 this.screen = Screen::Configuration;
-                window.resize(size(px(WIDTH), px(CONFIGURATION_HEIGHT)));
+                window.resize(size(px(WIDTH), px(configuration_height(&this.snapshot))));
                 cx.notify();
             }))
     }
@@ -1397,9 +1585,9 @@ fn agent_group_label(group: &ProcessGroup, theme: Theme) -> impl IntoElement {
     header.tooltip(move |_, cx| cx.new(|_| AgentGroupDetails(details.clone())).into())
 }
 
-struct ConfigurationTooltip;
+struct TextTooltip(SharedString);
 
-impl Render for ConfigurationTooltip {
+impl Render for TextTooltip {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::for_appearance(window.appearance());
         div()
@@ -1411,7 +1599,7 @@ impl Render for ConfigurationTooltip {
             .border_color(theme.border)
             .text_color(theme.text)
             .text_size(px(11.0))
-            .child("Configuration")
+            .child(self.0.clone())
     }
 }
 
@@ -1458,7 +1646,7 @@ impl Render for AgentGroupDetails {
     }
 }
 
-fn section_label(text: impl Into<SharedString>, theme: Theme) -> impl IntoElement {
+fn section_label(text: impl Into<SharedString>, theme: Theme) -> gpui::Div {
     div()
         .font_family(MONO)
         .px_4()
@@ -1468,6 +1656,35 @@ fn section_label(text: impl Into<SharedString>, theme: Theme) -> impl IntoElemen
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme.faint)
         .child(text.into())
+}
+
+fn icon_button(
+    id: impl Into<gpui::ElementId>,
+    icon: &'static str,
+    tooltip: impl Into<SharedString>,
+    hover: Rgba,
+    theme: Theme,
+) -> gpui::Stateful<gpui::Div> {
+    let tooltip = tooltip.into();
+    div()
+        .id(id.into())
+        .group("icon-button")
+        .size(px(22.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_md()
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.hover))
+        .child(
+            gpui::svg()
+                .path(icon)
+                .size(px(14.0))
+                .text_color(theme.muted)
+                .group_hover("icon-button", move |s| s.text_color(hover)),
+        )
+        .tooltip(move |_, cx| cx.new(|_| TextTooltip(tooltip.clone())).into())
 }
 
 fn button(
