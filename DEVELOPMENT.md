@@ -51,6 +51,52 @@ stop any test servers through the preview CLI before finishing. Temporary UI
 state, such as the selected log view, resets when the UI restarts. The preview
 does not exercise menu bar, notification, signing, or packaging behavior.
 
+## Screenshot and interaction fixtures
+
+Launch the installed app's real UI with disposable sample data:
+
+```sh
+python3 scripts/fixture.py
+```
+
+Use a bundle built from this checkout so its UI and fixture protocol match.
+The default scene has one Stale process, a Managed workspace, an Unrecognized
+server, and two Recognized processes totaling 210 MiB. Expand Recognized, hover
+rows, open logs or Configuration, and try recognize, undo, Stop, and Stop all.
+Actions change the sample data; restarting the command resets it.
+
+The runner starts a fixture socket in a temporary `PINCH_HOME` and launches the
+bundled `pinch-ui --dev`, which stays open on blur. It never starts the real engine,
+signals fixture PIDs, or changes installed state. Pressing Escape in the window or
+Ctrl-C stops the session and removes its temporary files. The regular app can
+keep running alongside it. This exercises the real UI and RPC client with a fake
+engine; it does not exercise process discovery, actual termination, native
+notifications, or Sparkle.
+
+```sh
+python3 scripts/fixture.py --app dist/Pinch.app
+python3 scripts/fixture.py --scenario empty
+python3 scripts/fixture.py --scenario notifications-disabled
+python3 scripts/fixture.py --scenario updates-available
+```
+
+For native automation, use a named fixture bundle so tools can select its window
+separately from the running regular app:
+
+```sh
+PROFILE=debug scripts/bundle.sh --variant fixture
+python3 scripts/fixture.py --app "dist/Pinch Fixture.app"
+```
+
+`--serve-only` prints the temporary `PINCH_HOME` without opening a window, for
+CLI or socket tests. Keep it running and use the printed directory with the
+bundled CLI, for example `PINCH_HOME=/tmp/pinch-fixture-… pinch ps --json`.
+Add `--verbose` to print the request types received from the UI.
+The checked-in snapshot and logs live in `scripts/fixtures/process-list.json`.
+Timestamps are rebased when read so uptime and quiet durations stay consistent
+across screenshots. macOS screenshot capture still requires Screen Recording
+access in the capture tool.
+
 ## Build and install the app
 
 ```sh

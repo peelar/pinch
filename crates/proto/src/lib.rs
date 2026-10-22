@@ -437,6 +437,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn screenshot_fixture_uses_the_real_snapshot_contract() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../../scripts/fixtures/process-list.json"))
+                .unwrap();
+        assert_eq!(
+            fixture["protocol_version"].as_u64(),
+            Some(u64::from(PROTOCOL_VERSION))
+        );
+        let response: Response = serde_json::from_value(fixture["snapshot"].clone()).unwrap();
+        let Response::Snapshot {
+            processes,
+            decisions,
+            recognized,
+            ..
+        } = response
+        else {
+            panic!("fixture must contain a snapshot");
+        };
+        assert!(processes.iter().any(|p| p.origin == Origin::Managed));
+        assert!(
+            processes
+                .iter()
+                .any(|p| p.origin == Origin::Unmanaged && !p.recognized)
+        );
+        assert!(processes.iter().any(|p| p.recognized));
+        assert!(
+            decisions
+                .iter()
+                .all(|d| processes.iter().any(|p| p.id == d.process))
+        );
+        assert!(!recognized.is_empty());
+    }
+
+    #[test]
     fn new_starts_require_a_known_harness() {
         let spawn = serde_json::json!({
             "name": "web", "command": ["pnpm", "dev"], "cwd": "/tmp", "owner": null

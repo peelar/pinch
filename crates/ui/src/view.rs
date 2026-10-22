@@ -1384,7 +1384,7 @@ impl Popover {
                     .pb_1()
                     .text_size(px(12.0))
                     .text_color(theme.muted)
-                    .child("Their processes are expected, so Pinch doesn't list them."),
+                    .child("Expected apps stay visible in Recognized."),
             )
             .children(
                 self.snapshot
