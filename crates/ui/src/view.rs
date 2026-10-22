@@ -567,6 +567,8 @@ impl Popover {
             .then(|| format!("~{} to free", bytes(list.stale_ram())));
         let stop = div()
             .id("stop-stale")
+            .font_family(".SystemUIFont")
+            .font_weight(FontWeight::NORMAL)
             .px_2()
             .py_1()
             .rounded_md()
@@ -583,28 +585,18 @@ impl Popover {
                     }))
             });
         div()
-            .mt_2()
-            .mb_2()
             .child(
-                div()
-                    .px_4()
+                section_label(format!("STALE · {}", list.stale.len()), theme)
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .font_family(MONO)
-                            .text_size(px(10.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.faint)
-                            .child(format!("STALE · {}", list.stale.len())),
-                    )
+                    .child(div().flex_1())
                     .when_some(summary, |header, summary| {
                         header.child(
                             div()
                                 .font_family(MONO)
                                 .text_size(px(10.0))
+                                .font_weight(FontWeight::NORMAL)
                                 .text_color(theme.faint)
                                 .child(summary),
                         )
@@ -634,8 +626,7 @@ impl Popover {
                     .unwrap_or_default();
                 div()
                     .id(SharedString::from(format!("stale-{}", process.id.0)))
-                    .ml_6()
-                    .mr_3()
+                    .mx_2()
                     .px_2()
                     .py_2()
                     .rounded_md()
@@ -1113,28 +1104,24 @@ impl Popover {
                 .map(|m| m.rss_bytes)
                 .sum();
             body = body.child(
-                div()
-                    .id("recognized-toggle")
-                    .px_4()
-                    .py_2()
-                    .cursor_pointer()
-                    .font_family(MONO)
-                    .text_size(px(10.0))
-                    .text_color(theme.faint)
-                    .child(format!(
-                        "{} RECOGNIZED · {} · {}",
-                        if self.recognized_open { "▾" } else { "▸" },
-                        list.recognized.len(),
-                        bytes(ram)
-                    ))
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.recognized_open = !this.recognized_open;
-                        window.resize(size(
-                            px(WIDTH),
-                            px(list_height(&this.snapshot, this.recognized_open)),
-                        ));
-                        cx.notify();
-                    })),
+                section_label(
+                    format!("RECOGNIZED · {} · {}", list.recognized.len(), bytes(ram)),
+                    theme,
+                )
+                .id("recognized-toggle")
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(if self.recognized_open { "▾" } else { "▸" })
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.recognized_open = !this.recognized_open;
+                    window.resize(size(
+                        px(WIDTH),
+                        px(list_height(&this.snapshot, this.recognized_open)),
+                    ));
+                    cx.notify();
+                })),
             );
             if self.recognized_open {
                 for &(i, p) in &list.recognized {
@@ -1659,7 +1646,7 @@ impl Render for AgentGroupDetails {
     }
 }
 
-fn section_label(text: impl Into<SharedString>, theme: Theme) -> impl IntoElement {
+fn section_label(text: impl Into<SharedString>, theme: Theme) -> gpui::Div {
     div()
         .font_family(MONO)
         .px_4()
