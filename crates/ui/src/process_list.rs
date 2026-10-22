@@ -3,6 +3,7 @@ use pinch_proto::{Decision, Origin, ProcessInfo};
 pub struct ProcessList<'a> {
     pub stale: Vec<(&'a ProcessInfo, &'a Decision)>,
     pub managed: Vec<(usize, &'a ProcessInfo)>,
+    pub recognized: Vec<(usize, &'a ProcessInfo)>,
     pub unmanaged: Vec<(usize, &'a ProcessInfo)>,
 }
 
@@ -12,13 +13,18 @@ impl<'a> ProcessList<'a> {
             stale: Vec::new(),
             managed: Vec::new(),
             unmanaged: Vec::new(),
+            recognized: Vec::new(),
         };
         for (index, process) in processes.iter().enumerate() {
             if !process.status.is_alive() {
                 continue;
             }
             if process.origin == Origin::Unmanaged {
-                list.unmanaged.push((index, process));
+                if process.recognized {
+                    list.recognized.push((index, process));
+                } else {
+                    list.unmanaged.push((index, process));
+                }
             } else if let Some(decision) = decisions.iter().find(|d| d.process == process.id) {
                 list.stale.push((process, decision));
             } else {
@@ -43,6 +49,7 @@ impl<'a> ProcessList<'a> {
         };
         list.managed.sort_by(by_resources);
         list.unmanaged.sort_by(by_resources);
+        list.recognized.sort_by(by_resources);
         list
     }
 
@@ -67,6 +74,7 @@ mod tests {
             name: id.into(),
             kind: ProcessKind::Node,
             origin,
+            recognized: false,
             status,
             command: vec![],
             cwd: format!("/work/{id}"),
@@ -140,6 +148,22 @@ mod tests {
         );
         assert_eq!(list.unmanaged.len(), 1);
         assert_eq!(list.unmanaged[0].1.name, "external");
+    }
+
+    #[test]
+    fn recognized_processes_stay_visible_without_becoming_stale() {
+        let mut expected = process("expected", Origin::Unmanaged, Status::Running, 0.0, 200);
+        expected.recognized = true;
+        let processes = vec![
+            expected,
+            process("unknown", Origin::Unmanaged, Status::Running, 0.0, 20),
+        ];
+        let decisions = vec![decision("expected")];
+        let list = ProcessList::new(&processes, &decisions);
+        assert_eq!(list.recognized.len(), 1);
+        assert_eq!(list.unmanaged.len(), 1);
+        assert!(list.stale.is_empty());
+        assert_eq!(list.recognized[0].1.metrics.unwrap().rss_bytes, 200);
     }
 
     #[test]

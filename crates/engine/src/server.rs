@@ -121,6 +121,10 @@ fn dispatch(
                 engine.recognize(&process)?;
                 Response::Ok
             }
+            Request::Unrecognize { process } => {
+                engine.unrecognize(&process)?;
+                Response::Ok
+            }
             Request::Forget { app } => {
                 engine.forget(&app)?;
                 Response::Ok

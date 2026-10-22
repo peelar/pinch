@@ -2,4 +2,4 @@
 "pinch": patch
 ---
 
-Recognize an app like Raycast to stop listing its processes. The section for processes started outside Pinch is now called Unrecognized, row actions are icon buttons, and Configuration lists recognized apps so you can show them again.
+Recognize expected processes without hiding them: persistent rules for installed apps and per-process rules for everything else. A collapsed Recognized section keeps them visible, stoppable, and included in totals. Rename processes outside Pinch to Unrecognized, use icon row actions with tooltips, and list recognized apps in Configuration.

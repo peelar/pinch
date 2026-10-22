@@ -206,19 +206,22 @@ that a listener is a dev server. Discovered termination requires a separate
 identity confirmation and rechecks PID/start time before sending SIGTERM to that
 PID alone; it never signals the group or escalates to SIGKILL.
 
-### Recognized apps
+### Recognized processes
 
-The popover's **Unrecognized** section lists discovered listeners that may be
-using resources unexpectedly. Recognizing a listener's app hides every listener
-that app starts, now and after restarts, from the popover and `pinch ps`.
-The Configuration screen lists recognized apps and can show them again. Rules
-live in `recognized.json` beside `state.json`.
+Every **Unrecognized** row can be recognized. Processes stay visible and stoppable
+in the muted **Recognized** section at the bottom. It starts collapsed with a
+process count and RAM total; click to expand. Recognized processes still count
+toward the header's running count and RAM total.
 
-Only installed apps can be recognized: a bundle directly inside an
-`Applications` folder that contains the executable or launched it. Listeners
-inside a repository are never covered, so recognizing a terminal or editor does
-not hide the projects it runs. Bundles nested in frameworks, like the
-`Python.app` shipped with the Command Line Tools, are runtimes, not apps.
+For an installed app directly inside `/Applications` or `~/Applications`, the rule
+covers its future processes too. Configuration lists these apps. Processes inside
+a repository get a rule for that running process instead, so recognizing a terminal
+or editor does not cover the projects it runs. Runtime bundles such as the system
+`Python.app` also get a process rule. Process rules match PID and start time;
+a restarted process is unrecognized again. Rules live in `recognized.json`, and
+survive engine updates. Undo recognition from the row, or remove an app rule in
+Configuration. Recognizing never hides processes or changes cleanup decisions;
+only processes started through Pinch can become stale.
 
 ### Cleanup suggestions
 

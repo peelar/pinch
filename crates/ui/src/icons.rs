@@ -9,8 +9,8 @@ impl AssetSource for Assets {
         let bytes: Option<&'static [u8]> = match path {
             "icons/settings.svg" => Some(include_bytes!("../assets/icons/settings.svg")),
             "icons/x.svg" => Some(include_bytes!("../assets/icons/x.svg")),
-            "icons/eye.svg" => Some(include_bytes!("../assets/icons/eye.svg")),
-            "icons/eye-off.svg" => Some(include_bytes!("../assets/icons/eye-off.svg")),
+            "icons/undo.svg" => Some(include_bytes!("../assets/icons/undo.svg")),
+            "icons/check.svg" => Some(include_bytes!("../assets/icons/check.svg")),
             "brand/daemon.svg" => Some(include_bytes!("../../../assets/brand/daemon.svg")),
             "brand/wordmark.svg" => Some(include_bytes!("../../../assets/brand/wordmark.svg")),
             "runtimes/node.svg" => Some(include_bytes!("../assets/runtimes/node.svg")),

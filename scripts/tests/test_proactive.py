@@ -87,6 +87,45 @@ class ProactiveTests(unittest.TestCase):
             self.assertEqual(self.snapshot()["decisions"], [])
             time.sleep(0.2)
 
+    def test_recognized_listener_stays_stoppable_and_only_covers_its_process_lifetime(self):
+        def listener():
+            return subprocess.Popen(
+                [sys.executable, "-c", "import socket,time; s=socket.socket(); "
+                 "s.bind(('127.0.0.1',0)); s.listen(); time.sleep(180)"],
+                cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+
+        def discovered(pid):
+            return next((p for p in self.snapshot()["processes"] if p["pid"] == pid), None)
+
+        original = listener()
+        restarted = None
+        try:
+            process = self.wait_for(lambda: discovered(original.pid))
+            self.assertEqual(process["origin"], "unmanaged")
+            self.assertFalse(process["recognized"])
+            self.rpc({"type": "recognize", "process": process})
+            self.assertTrue(discovered(original.pid)["recognized"])
+            self.stop_engine()
+            self.start_engine()
+            restored = self.wait_for(lambda: discovered(original.pid))
+            self.assertTrue(restored["recognized"])
+            self.assertEqual(restored["id"], process["id"])
+            self.assertEqual(self.snapshot()["decisions"], [])
+            self.rpc({"type": "unrecognize", "process": restored})
+            self.assertFalse(discovered(original.pid)["recognized"])
+            self.rpc({"type": "recognize", "process": restored})
+            self.rpc({"type": "stop_discovered", "process": discovered(original.pid)})
+            original.wait(timeout=5)
+            restarted = listener()
+            fresh = self.wait_for(lambda: discovered(restarted.pid))
+            self.assertFalse(fresh["recognized"])
+        finally:
+            for child in (original, restarted):
+                if child is not None and child.poll() is None:
+                    child.terminate()
+                    child.wait(timeout=5)
+
     def test_decision_survives_restart_ensure_resets_and_keep_is_persistent(self):
         code = "import time; time.sleep(180)"
         process = self.ensure("idle", code)["process"]

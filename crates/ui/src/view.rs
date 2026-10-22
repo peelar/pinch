@@ -117,6 +117,10 @@ fn fetch_engine() -> Snapshot {
 
 /// Window height that fits the content, within sane bounds.
 pub fn height_for(snapshot: &Snapshot) -> f32 {
+    list_height(snapshot, false)
+}
+
+fn list_height(snapshot: &Snapshot, recognized_open: bool) -> f32 {
     let list = ProcessList::new(&snapshot.processes, &snapshot.decisions);
     let managed = list.managed.len() as f32;
     let unmanaged = list.unmanaged.len() as f32;
@@ -130,7 +134,7 @@ pub fn height_for(snapshot: &Snapshot) -> f32 {
     if !list.stale.is_empty() {
         h += 38.0 + list.stale.len() as f32 * 60.0;
     }
-    if managed + unmanaged == 0.0 && list.stale.is_empty() {
+    if managed + unmanaged == 0.0 && list.stale.is_empty() && list.recognized.is_empty() {
         h += 150.0;
     }
     if managed > 0.0 {
@@ -144,6 +148,12 @@ pub fn height_for(snapshot: &Snapshot) -> f32 {
     }
     if unmanaged > 0.0 {
         h += 34.0 + unmanaged * 68.0;
+    }
+    if !list.recognized.is_empty() {
+        h += 34.0;
+        if recognized_open {
+            h += list.recognized.len() as f32 * 68.0;
+        }
     }
     h.clamp(240.0, 640.0)
 }
@@ -173,6 +183,7 @@ pub struct Popover {
     answering: bool,
     confirm_stop: Option<ProcessInfo>,
     stop_details_open: bool,
+    recognized_open: bool,
 }
 
 impl Popover {
@@ -230,6 +241,7 @@ impl Popover {
             answering: false,
             confirm_stop: None,
             stop_details_open: false,
+            recognized_open: false,
         }
     }
 
@@ -240,7 +252,7 @@ impl Popover {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let old_height = height_for(&self.snapshot);
+        let old_height = list_height(&self.snapshot, self.recognized_open);
         self.resources.update(cx, |current, cx| {
             *current = snapshot.system;
             cx.notify();
@@ -252,7 +264,7 @@ impl Popover {
                 self.log_scroll.scroll_to_bottom();
             }
             (Screen::List, _) if self.confirm_stop.is_none() => {
-                let height = height_for(&self.snapshot);
+                let height = list_height(&self.snapshot, self.recognized_open);
                 if (height - old_height).abs() > 1.0 {
                     window.resize(size(px(WIDTH), px(height)));
                 }
@@ -322,14 +334,20 @@ impl Popover {
 
     fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.screen = Screen::List;
-        window.resize(size(px(WIDTH), px(height_for(&self.snapshot))));
+        window.resize(size(
+            px(WIDTH),
+            px(list_height(&self.snapshot, self.recognized_open)),
+        ));
         cx.notify();
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if event.keystroke.key == "escape" {
             if self.confirm_stop.take().is_some() {
-                window.resize(size(px(WIDTH), px(height_for(&self.snapshot))));
+                window.resize(size(
+                    px(WIDTH),
+                    px(list_height(&self.snapshot, self.recognized_open)),
+                ));
                 cx.notify();
                 return;
             }
@@ -692,10 +710,14 @@ impl Popover {
     ) -> AnyElement {
         let managed = p.origin == Origin::Managed;
         let alive = p.status.is_alive();
-        let color = match &p.status {
-            Status::Running => theme.running,
-            Status::Stale => theme.stale,
-            Status::Exited { .. } => theme.stopped,
+        let color = if p.recognized {
+            theme.faint
+        } else {
+            match &p.status {
+                Status::Running => theme.running,
+                Status::Stale => theme.stale,
+                Status::Exited { .. } => theme.stopped,
+            }
         };
 
         let mut subtitle = vec![p.kind.label().to_string()];
@@ -774,7 +796,11 @@ impl Popover {
                             .truncate()
                             .text_size(px(13.0))
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(if alive { theme.text } else { theme.muted })
+                            .text_color(if alive && !p.recognized {
+                                theme.text
+                            } else {
+                                theme.muted
+                            })
                             .child(name.clone()),
                     )
                     .child(
@@ -806,20 +832,39 @@ impl Popover {
             });
 
         {
-            let recognize = p.recognizable_app().map(|app| {
+            let recognize = (!managed).then(|| {
                 let process = p.clone();
+                let label = if p.recognized {
+                    p.recognizable_app()
+                        .map(|app| format!("Unrecognize {}", app_name(app)))
+                        .unwrap_or_else(|| "Unrecognize this process".into())
+                } else {
+                    p.recognizable_app()
+                        .map(|app| format!("Recognize {}", app_name(app)))
+                        .unwrap_or_else(|| "Recognize until this process exits".into())
+                };
                 icon_button(
                     ("recognize", index),
-                    "icons/eye-off.svg",
-                    format!("Recognize {}: stop listing its processes", app_name(app)),
-                    theme.text,
+                    if p.recognized {
+                        "icons/undo.svg"
+                    } else {
+                        "icons/check.svg"
+                    },
+                    label,
+                    theme.muted,
                     theme,
                 )
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                     cx.stop_propagation();
                     this.send(
-                        Request::Recognize {
-                            process: Box::new(process.clone()),
+                        if process.recognized {
+                            Request::Unrecognize {
+                                process: Box::new(process.clone()),
+                            }
+                        } else {
+                            Request::Recognize {
+                                process: Box::new(process.clone()),
+                            }
                         },
                         window,
                         cx,
@@ -939,7 +984,10 @@ impl Popover {
                             button("cancel-stop", "Cancel", false, theme).on_click(cx.listener(
                                 |this, _: &ClickEvent, window, cx| {
                                     this.confirm_stop = None;
-                                    window.resize(size(px(WIDTH), px(height_for(&this.snapshot))));
+                                    window.resize(size(
+                                        px(WIDTH),
+                                        px(list_height(&this.snapshot, this.recognized_open)),
+                                    ));
                                     cx.notify();
                                 },
                             )),
@@ -948,7 +996,10 @@ impl Popover {
                             button("confirm-stop", "Stop this process", true, theme).on_click(
                                 cx.listener(move |this, _: &ClickEvent, window, cx| {
                                     this.confirm_stop = None;
-                                    window.resize(size(px(WIDTH), px(height_for(&this.snapshot))));
+                                    window.resize(size(
+                                        px(WIDTH),
+                                        px(list_height(&this.snapshot, this.recognized_open)),
+                                    ));
                                     this.send(
                                         Request::StopDiscovered {
                                             process: Box::new(confirmed.clone()),
@@ -1000,6 +1051,7 @@ impl Popover {
         }
         if managed.is_empty()
             && unmanaged.is_empty()
+            && list.recognized.is_empty()
             && list.stale.is_empty()
             && self.snapshot.error.is_none()
             && !self.snapshot.loading
@@ -1051,6 +1103,43 @@ impl Popover {
             body = body.child(section_label("UNRECOGNIZED", theme));
             for &(i, p) in unmanaged {
                 body = body.child(self.process_row(i, p, theme, cx));
+            }
+        }
+        if !list.recognized.is_empty() {
+            let ram: u64 = list
+                .recognized
+                .iter()
+                .filter_map(|(_, p)| p.metrics)
+                .map(|m| m.rss_bytes)
+                .sum();
+            body = body.child(
+                div()
+                    .id("recognized-toggle")
+                    .px_4()
+                    .py_2()
+                    .cursor_pointer()
+                    .font_family(MONO)
+                    .text_size(px(10.0))
+                    .text_color(theme.faint)
+                    .child(format!(
+                        "{} RECOGNIZED · {} · {}",
+                        if self.recognized_open { "▾" } else { "▸" },
+                        list.recognized.len(),
+                        bytes(ram)
+                    ))
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.recognized_open = !this.recognized_open;
+                        window.resize(size(
+                            px(WIDTH),
+                            px(list_height(&this.snapshot, this.recognized_open)),
+                        ));
+                        cx.notify();
+                    })),
+            );
+            if self.recognized_open {
+                for &(i, p) in &list.recognized {
+                    body = body.child(self.process_row(i, p, theme, cx));
+                }
             }
         }
         body.into_any_element()
@@ -1241,6 +1330,7 @@ impl Popover {
                     .child(div().text_size(px(14.0)).font_weight(FontWeight::SEMIBOLD).child("Configuration"))
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.back(window, cx)))))
             .child(div().px_4().py_3().flex().flex_col().gap_3()
+                .child(div().flex().flex_col().gap_1()
                 .child(div().flex().items_center().justify_between()
                     .child(div().text_size(px(13.0)).child("Automatic updates"))
                     .child(div().id("automatic-update-checks")
@@ -1261,12 +1351,12 @@ impl Popover {
                                 cx.notify();
                             })))
                         .when(!updates.enabled, |toggle| toggle.opacity(0.4))))
-                .child(div().text_size(px(12.0)).text_color(theme.muted)
+                .child(div().text_size(px(12.0)).text_color(theme.faint)
                     .child(if updates.enabled {
                         "Check for new versions automatically. Installing an update always asks for approval."
                     } else {
                         "Updates are unavailable in this build."
-                    }))
+                    })))
                 .when(updates.enabled, |body| body.child(
                     div().flex().child(button("configuration-check-updates", "Check for Updates…", false, theme)
                         .when(updates.can_check || updates.available_version.is_some(), |button| button.on_click(
@@ -1335,8 +1425,8 @@ impl Popover {
                             .child(
                                 icon_button(
                                     ("forget", index),
-                                    "icons/eye.svg",
-                                    format!("List {} processes again", app.name()),
+                                    "icons/undo.svg",
+                                    format!("Unrecognize {}", app.name()),
                                     theme.text,
                                     theme,
                                 )

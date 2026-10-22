@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped on any breaking change to [`Request`] or [`Response`]; clients and
 /// the engine refuse to talk across versions.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Stable id of a managed process, assigned by the engine.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -213,13 +213,15 @@ impl ProcessInfo {
 fn is_installed_app(path: &str) -> bool {
     let path = std::path::Path::new(path);
     path.extension().is_some_and(|ext| ext == "app")
-        && path
-            .parent()
-            .and_then(std::path::Path::file_name)
-            .is_some_and(|dir| dir == "Applications")
+        && path.parent().is_some_and(|parent| {
+            parent == std::path::Path::new("/Applications")
+                || std::env::var_os("HOME").is_some_and(|home| {
+                    parent == std::path::PathBuf::from(home).join("Applications")
+                })
+        })
 }
 
-/// An app whose discovered processes are expected, so clients stop listing them.
+/// An app whose discovered processes are expected.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecognizedApp {
     pub path: String,
@@ -246,6 +248,8 @@ pub struct ProcessInfo {
     pub name: String,
     pub kind: ProcessKind,
     pub origin: Origin,
+    #[serde(default)]
+    pub recognized: bool,
     pub status: Status,
     pub command: Vec<String>,
     pub cwd: String,
@@ -364,13 +368,16 @@ pub enum Request {
     StopDiscovered {
         process: Box<ProcessInfo>,
     },
-    /// Stop listing processes of the app this discovered process belongs to.
+    /// Mark an installed app or this one running process as expected.
     Recognize {
         process: Box<ProcessInfo>,
     },
-    /// List a recognized app's processes again.
+    /// Remove a persistent app recognition rule.
     Forget {
         app: String,
+    },
+    Unrecognize {
+        process: Box<ProcessInfo>,
     },
     /// Remove a stopped managed process from the registry.
     Clear {
@@ -543,14 +550,12 @@ mod tests {
             raycast.recognizable_app(),
             Some("/Applications/Raycast.app")
         );
-        let helper = process(
-            Some("/Users/me/Applications/Pinch.app"),
-            Some("/Applications/Raycast.app"),
-            None,
-        );
+        let home_app = format!("{}/Applications/Pinch.app", std::env::var("HOME").unwrap());
+        let helper = process(Some(&home_app), Some("/Applications/Raycast.app"), None);
+        assert_eq!(helper.recognizable_app(), Some(home_app.as_str()));
         assert_eq!(
-            helper.recognizable_app(),
-            Some("/Users/me/Applications/Pinch.app")
+            process(Some("/tmp/Applications/Other.app"), None, None).recognizable_app(),
+            None
         );
         let python = process(
             Some(
