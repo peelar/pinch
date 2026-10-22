@@ -1,5 +1,12 @@
 # pinch
 
+## 0.2.3
+
+### Patch Changes
+
+- 5b2d8fb: Show stale processes first in a compact, indented list with Stop all, hide exited processes, and remove the Snooze action from the app, notifications, and CLI.
+- 46a5c3d: Recognize expected processes without hiding them: persistent rules for installed apps and per-process rules for everything else. A collapsed Recognized section keeps them visible, stoppable, and included in totals. Rename processes outside Pinch to Unrecognized, use icon row actions with tooltips, and list recognized apps in Configuration.
+
 ## 0.2.2
 
 ### Patch Changes
