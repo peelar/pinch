@@ -249,6 +249,10 @@ pnpm check:version
 bash -n scripts/bundle.sh scripts/install.sh scripts/release.sh
 ```
 
+CI caches Cargo dependencies and their build outputs between runs. Its debug
+builds keep file and line information for backtraces without full debugger
+metadata; local development and release profiles keep their existing settings.
+
 Add a Changeset for changes users should receive in a release:
 
 ```sh
