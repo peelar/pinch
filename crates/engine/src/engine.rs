@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use pinch_client::{home, logs_dir, now_ms};
 use pinch_proto::{
-    Decision, DecisionAnswer, Metrics, Origin, ProcessId, ProcessInfo, ProcessKind, Spawn, Status,
-    SystemMetrics,
+    Decision, DecisionAnswer, Metrics, Origin, ProcessId, ProcessInfo, ProcessKind, RecognizedApp,
+    Spawn, Status, SystemMetrics,
 };
 use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -77,7 +77,10 @@ struct Entry {
 struct Inner {
     entries: Vec<Entry>,
     decisions: Vec<Decision>,
+    /// Every discovered listener; recognized apps are filtered out at read time.
     unmanaged: Vec<ProcessInfo>,
+    recognized: Vec<RecognizedApp>,
+    recognized_path: PathBuf,
     sys: System,
     system_metrics: SystemMetrics,
     cpu_totals: HashMap<u32, u64>,
@@ -151,11 +154,17 @@ impl Engine {
             })
             .collect();
 
+        let recognized_path = home().join("recognized.json");
         let mut inner = Inner {
             entries,
             last_decisions: decisions.iter().map(|d| d.id.clone()).collect(),
             decisions,
             unmanaged: Vec::new(),
+            recognized: fs::read(&recognized_path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default(),
+            recognized_path,
             sys,
             system_metrics: SystemMetrics::default(),
             cpu_totals: HashMap::new(),
@@ -228,12 +237,71 @@ impl Engine {
         self.spawn_locked(&mut inner, spawn)
     }
 
-    pub fn snapshot(&self) -> (Vec<ProcessInfo>, Vec<Decision>, SystemMetrics) {
+    pub fn snapshot(
+        &self,
+    ) -> (
+        Vec<ProcessInfo>,
+        Vec<Decision>,
+        SystemMetrics,
+        Vec<RecognizedApp>,
+    ) {
         let inner = self.lock();
         let mut processes: Vec<ProcessInfo> =
             inner.entries.iter().map(|e| e.info.clone()).collect();
-        processes.extend(inner.unmanaged.iter().cloned());
-        (processes, inner.decisions.clone(), inner.system_metrics)
+        processes.extend(
+            inner
+                .unmanaged
+                .iter()
+                .filter(|p| !is_recognized(&inner.recognized, p))
+                .cloned(),
+        );
+        (
+            processes,
+            inner.decisions.clone(),
+            inner.system_metrics,
+            inner.recognized.clone(),
+        )
+    }
+
+    /// Recognize the app of a discovered process, judged from the engine's own
+    /// copy so a client cannot name an arbitrary path.
+    pub fn recognize(&self, reviewed: &ProcessInfo) -> Result<RecognizedApp> {
+        let mut inner = self.lock();
+        let info = inner
+            .unmanaged
+            .iter()
+            .find(|p| p.id == reviewed.id)
+            .ok_or_else(|| anyhow!("discovered process is no longer available; review it again"))?;
+        let path = info
+            .recognizable_app()
+            .ok_or_else(|| {
+                anyhow!(
+                    "'{}' does not belong to an installed app; only processes an app in \
+                     /Applications or ~/Applications starts outside a repository can be recognized",
+                    info.name
+                )
+            })?
+            .to_string();
+        if let Some(app) = inner.recognized.iter().find(|app| app.path == path) {
+            return Ok(app.clone());
+        }
+        let app = RecognizedApp {
+            path,
+            recognized_at_ms: now_ms(),
+        };
+        inner.recognized.push(app.clone());
+        save_recognized(&inner.recognized_path, &inner.recognized)?;
+        Ok(app)
+    }
+
+    pub fn forget(&self, path: &str) -> Result<()> {
+        let mut inner = self.lock();
+        let before = inner.recognized.len();
+        inner.recognized.retain(|app| app.path != path);
+        if inner.recognized.len() == before {
+            bail!("'{path}' is not a recognized app");
+        }
+        save_recognized(&inner.recognized_path, &inner.recognized)
     }
 
     pub fn stop(&self, target: &str) -> Result<ProcessInfo> {
@@ -828,6 +896,19 @@ fn save(inner: &Inner) {
     }
 }
 
+fn save_recognized(path: &Path, recognized: &[RecognizedApp]) -> Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_vec_pretty(recognized)?)
+        .and_then(|()| fs::rename(&tmp, path))
+        .with_context(|| format!("could not save recognized apps to {}", path.display()))
+}
+
+fn is_recognized(recognized: &[RecognizedApp], process: &ProcessInfo) -> bool {
+    process
+        .recognizable_app()
+        .is_some_and(|path| recognized.iter().any(|app| app.path == path))
+}
+
 fn sync_attention(hooks: &Hooks, inner: &mut Inner) {
     let ids: Vec<String> = inner.decisions.iter().map(|d| d.id.clone()).collect();
     if ids != inner.last_decisions {
@@ -1084,6 +1165,8 @@ mod identity_tests {
                 entries: vec![],
                 decisions: vec![],
                 unmanaged: vec![info],
+                recognized: vec![],
+                recognized_path: PathBuf::new(),
                 sys: System::new(),
                 system_metrics: SystemMetrics::default(),
                 cpu_totals: HashMap::new(),
@@ -1153,6 +1236,82 @@ mod identity_tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    fn discovered(
+        pid: u32,
+        executable: &str,
+        launcher_app: &str,
+        repo: Option<&str>,
+    ) -> ProcessInfo {
+        serde_json::from_value(serde_json::json!({
+            "id": format!("pid:{pid}:1"), "name": format!("node:{pid}"), "kind": "node",
+            "origin": "unmanaged", "status": {"state": "running"}, "command": [], "cwd": "/",
+            "executable": executable, "launcher_app": launcher_app, "repo": repo,
+            "branch": null, "owner": null, "pid": pid, "ports": [pid as u16],
+            "started_at_ms": 1000, "last_output_ms": null, "log_path": null, "metrics": null
+        }))
+        .unwrap()
+    }
+
+    fn engine_with(unmanaged: Vec<ProcessInfo>, recognized_path: PathBuf) -> Engine {
+        Engine {
+            inner: Mutex::new(Inner {
+                entries: vec![],
+                decisions: vec![],
+                unmanaged,
+                recognized: vec![],
+                recognized_path,
+                sys: System::new(),
+                system_metrics: SystemMetrics::default(),
+                cpu_totals: HashMap::new(),
+                system_sampled_at: None,
+                counter: 0,
+                last_decisions: Vec::new(),
+                last_activity_saved_ms: 0,
+            }),
+            cfg: Config {
+                stale_after: Duration::from_secs(3600),
+            },
+            hooks: Hooks::default(),
+        }
+    }
+
+    #[test]
+    fn recognized_apps_stay_hidden_across_restarts_until_forgotten() {
+        let dir = std::env::temp_dir().join(format!("pinch-recognized-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("recognized.json");
+        let raycast = "/Applications/Raycast.app";
+        let backend = discovered(7265, "/rc/node-v22.23.3/bin/node", raycast, None);
+        let project = discovered(3000, "/opt/homebrew/bin/node", raycast, Some("/repos/web"));
+        let engine = engine_with(vec![backend.clone(), project.clone()], path.clone());
+
+        assert!(engine.recognize(&project).is_err());
+        let app = engine.recognize(&backend).unwrap();
+        assert_eq!(app.path, raycast);
+        assert_eq!(engine.recognize(&backend).unwrap(), app);
+        let names = |engine: &Engine| {
+            engine
+                .snapshot()
+                .0
+                .into_iter()
+                .map(|p| p.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&engine), ["node:3000"]);
+
+        let saved: Vec<RecognizedApp> = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved, [app]);
+        let restarted = discovered(8123, "/rc/node-v24.1.0/bin/node", raycast, None);
+        engine.lock().unmanaged.push(restarted);
+        assert_eq!(names(&engine), ["node:3000"]);
+
+        engine.forget(raycast).unwrap();
+        assert!(engine.forget(raycast).is_err());
+        assert_eq!(names(&engine), ["node:7265", "node:3000", "node:8123"]);
+        assert!(engine.snapshot().3.is_empty());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

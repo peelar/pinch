@@ -206,6 +206,20 @@ that a listener is a dev server. Discovered termination requires a separate
 identity confirmation and rechecks PID/start time before sending SIGTERM to that
 PID alone; it never signals the group or escalates to SIGKILL.
 
+### Recognized apps
+
+The popover's **Unrecognized** section lists discovered listeners that may be
+using resources unexpectedly. Recognizing a listener's app hides every listener
+that app starts, now and after restarts, from the popover and `pinch ps`.
+The Configuration screen lists recognized apps and can show them again. Rules
+live in `recognized.json` beside `state.json`.
+
+Only installed apps can be recognized: a bundle directly inside an
+`Applications` folder that contains the executable or launched it. Listeners
+inside a repository are never covered, so recognizing a terminal or editor does
+not hide the projects it runs. Bundles nested in frameworks, like the
+`Python.app` shipped with the Command Line Tools, are runtimes, not apps.
+
 ### Cleanup suggestions
 
 A managed process becomes eligible after two quiet hours. Log output, observed

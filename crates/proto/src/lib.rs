@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped on any breaking change to [`Request`] or [`Response`]; clients and
 /// the engine refuse to talk across versions.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Stable id of a managed process, assigned by the engine.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -187,6 +187,20 @@ impl ProcessGroup {
 }
 
 impl ProcessInfo {
+    /// The installed app this discovered process belongs to, if it may be
+    /// recognized as expected. Processes inside a repository are someone's
+    /// project, and bundles outside an Applications folder (like the
+    /// `Python.app` shipped inside `Python3.framework`) are runtimes.
+    pub fn recognizable_app(&self) -> Option<&str> {
+        if self.origin != Origin::Unmanaged || self.repo.is_some() {
+            return None;
+        }
+        [self.app_bundle.as_deref(), self.launcher_app.as_deref()]
+            .into_iter()
+            .flatten()
+            .find(|path| is_installed_app(path))
+    }
+
     pub fn group(&self) -> ProcessGroup {
         ProcessGroup {
             agent: self.agent.clone(),
@@ -194,6 +208,34 @@ impl ProcessInfo {
             branch: self.branch.clone(),
         }
     }
+}
+
+fn is_installed_app(path: &str) -> bool {
+    let path = std::path::Path::new(path);
+    path.extension().is_some_and(|ext| ext == "app")
+        && path
+            .parent()
+            .and_then(std::path::Path::file_name)
+            .is_some_and(|dir| dir == "Applications")
+}
+
+/// An app whose discovered processes are expected, so clients stop listing them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecognizedApp {
+    pub path: String,
+    pub recognized_at_ms: u64,
+}
+
+impl RecognizedApp {
+    pub fn name(&self) -> &str {
+        app_name(&self.path)
+    }
+}
+
+/// `/Applications/Raycast.app` → `Raycast`.
+pub fn app_name(path: &str) -> &str {
+    let file = path.rsplit('/').next().unwrap_or(path);
+    file.strip_suffix(".app").unwrap_or(file)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -322,6 +364,14 @@ pub enum Request {
     StopDiscovered {
         process: Box<ProcessInfo>,
     },
+    /// Stop listing processes of the app this discovered process belongs to.
+    Recognize {
+        process: Box<ProcessInfo>,
+    },
+    /// List a recognized app's processes again.
+    Forget {
+        app: String,
+    },
     /// Remove a stopped managed process from the registry.
     Clear {
         name: String,
@@ -363,6 +413,8 @@ pub enum Response {
         notifications: NotificationStatus,
         #[serde(default)]
         updates: UpdateStatus,
+        #[serde(default)]
+        recognized: Vec<RecognizedApp>,
     },
     Logs {
         text: String,
@@ -452,6 +504,7 @@ mod tests {
             decisions: vec![],
             notifications: NotificationStatus::Enabled,
             updates: UpdateStatus::default(),
+            recognized: vec![],
             system: SystemMetrics {
                 cpu_percent: Some(42.0),
                 memory_used_bytes: 12_000,
@@ -471,6 +524,48 @@ mod tests {
         assert_eq!(system.memory_available_bytes, 4_000);
         assert_eq!(system.swap_used_bytes, 500);
         assert_eq!(system.sampled_at_ms, 123_456);
+    }
+
+    #[test]
+    fn only_installed_apps_outside_repositories_can_be_recognized() {
+        let process = |app_bundle: Option<&str>, launcher_app: Option<&str>, repo: Option<&str>| {
+            serde_json::from_value::<ProcessInfo>(serde_json::json!({
+                "id": "pid:1:1", "name": "node:7265", "kind": "node", "origin": "unmanaged",
+                "status": {"state": "running"}, "command": [], "cwd": "/",
+                "app_bundle": app_bundle, "launcher_app": launcher_app, "repo": repo,
+                "branch": null, "owner": null, "pid": 1, "ports": [7265],
+                "started_at_ms": 1, "last_output_ms": null, "log_path": null, "metrics": null
+            }))
+            .unwrap()
+        };
+        let raycast = process(None, Some("/Applications/Raycast.app"), None);
+        assert_eq!(
+            raycast.recognizable_app(),
+            Some("/Applications/Raycast.app")
+        );
+        let helper = process(
+            Some("/Users/me/Applications/Pinch.app"),
+            Some("/Applications/Raycast.app"),
+            None,
+        );
+        assert_eq!(
+            helper.recognizable_app(),
+            Some("/Users/me/Applications/Pinch.app")
+        );
+        let python = process(
+            Some(
+                "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app",
+            ),
+            None,
+            None,
+        );
+        assert_eq!(python.recognizable_app(), None);
+        let project = process(None, Some("/Applications/Ghostty.app"), Some("/repos/web"));
+        assert_eq!(project.recognizable_app(), None);
+        let mut managed = raycast.clone();
+        managed.origin = Origin::Managed;
+        assert_eq!(managed.recognizable_app(), None);
+        assert_eq!(app_name("/Applications/Raycast.app"), "Raycast");
     }
 
     #[test]

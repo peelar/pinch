@@ -9,7 +9,8 @@ use gpui::{
 };
 use pinch_client::{now_ms, onboarding, request, request_autostart};
 use pinch_proto::{
-    Decision, DecisionAnswer, Origin, ProcessGroup, ProcessInfo, Request, Response, Status,
+    Decision, DecisionAnswer, Origin, ProcessGroup, ProcessInfo, RecognizedApp, Request, Response,
+    Status, app_name,
 };
 
 use crate::process_list::ProcessList;
@@ -19,7 +20,6 @@ use pinch_proto::{NotificationStatus, SystemMetrics};
 
 pub const WIDTH: f32 = 400.0;
 const LOG_HEIGHT: f32 = 520.0;
-const CONFIGURATION_HEIGHT: f32 = 280.0;
 const MONO: &str = "Menlo";
 
 #[derive(Default, Clone)]
@@ -30,6 +30,7 @@ pub struct Snapshot {
     pub updates: pinch_proto::UpdateStatus,
     pub processes: Vec<ProcessInfo>,
     pub decisions: Vec<Decision>,
+    pub recognized: Vec<RecognizedApp>,
     pub error: Option<String>,
     /// Offer to install the pinch skill into detected agent harnesses.
     pub onboarding: bool,
@@ -90,6 +91,7 @@ fn fetch_engine() -> Snapshot {
             system,
             notifications,
             updates,
+            recognized,
         }) => Snapshot {
             loading: false,
             system,
@@ -97,6 +99,7 @@ fn fetch_engine() -> Snapshot {
             updates,
             processes,
             decisions,
+            recognized,
             error: None,
             onboarding: false,
         },
@@ -143,6 +146,15 @@ pub fn height_for(snapshot: &Snapshot) -> f32 {
         h += 34.0 + unmanaged * 68.0;
     }
     h.clamp(240.0, 640.0)
+}
+
+fn configuration_height(snapshot: &Snapshot) -> f32 {
+    let recognized = if snapshot.recognized.is_empty() {
+        0.0
+    } else {
+        72.0 + snapshot.recognized.len() as f32 * 40.0
+    };
+    (280.0 + recognized).min(640.0)
 }
 
 enum Screen {
@@ -244,6 +256,9 @@ impl Popover {
                 if (height - old_height).abs() > 1.0 {
                     window.resize(size(px(WIDTH), px(height)));
                 }
+            }
+            (Screen::Configuration, _) => {
+                window.resize(size(px(WIDTH), px(configuration_height(&self.snapshot))));
             }
             _ => {}
         }
@@ -791,24 +806,43 @@ impl Popover {
             });
 
         {
+            let recognize = p.recognizable_app().map(|app| {
+                let process = p.clone();
+                icon_button(
+                    ("recognize", index),
+                    "icons/eye-off.svg",
+                    format!("Recognize {}: stop listing its processes", app_name(app)),
+                    theme.text,
+                    theme,
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.send(
+                        Request::Recognize {
+                            process: Box::new(process.clone()),
+                        },
+                        window,
+                        cx,
+                    );
+                }))
+            });
             let process = p.clone();
-            let mut action = div()
-                .id((if alive { "stop" } else { "clear" }, index))
-                .w_5()
-                .h_5()
-                .rounded_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(px(11.0))
-                .text_color(theme.muted)
-                .hover(|s| s.bg(theme.hover).text_color(theme.danger))
-                .cursor_pointer()
-                .child("✕");
+            let stop = icon_button(
+                (if alive { "stop" } else { "clear" }, index),
+                "icons/x.svg",
+                match (alive, managed) {
+                    (false, _) => "Clear",
+                    (true, true) => "Stop",
+                    (true, false) => "Stop…",
+                },
+                theme.danger,
+                theme,
+            );
+            let mut actions = div().flex().flex_none().gap_1().children(recognize);
             if alive {
-                action = action.invisible().group_hover("row", |s| s.visible());
+                actions = actions.invisible().group_hover("row", |s| s.visible());
             }
-            row = row.child(action.on_click(cx.listener(
+            row = row.child(actions.child(stop.on_click(cx.listener(
                 move |this, _: &ClickEvent, window, cx| {
                     cx.stop_propagation();
                     if !managed {
@@ -832,7 +866,7 @@ impl Popover {
                         cx,
                     );
                 },
-            )));
+            ))));
         }
         if managed {
             row = row.cursor_pointer().on_click(cx.listener(
@@ -1014,7 +1048,7 @@ impl Popover {
             }
         }
         if !unmanaged.is_empty() {
-            body = body.child(section_label("RUNNING OUTSIDE PINCH", theme));
+            body = body.child(section_label("UNRECOGNIZED", theme));
             for &(i, p) in unmanaged {
                 body = body.child(self.process_row(i, p, theme, cx));
             }
@@ -1240,7 +1274,84 @@ impl Popover {
                         .when(!updates.can_check && updates.available_version.is_none(), |button| button.opacity(0.4)))))
                 .when_some(self.snapshot.error.clone(), |body, error| body.child(
                     div().text_size(px(12.0)).text_color(theme.danger).child(error))))
+            .when(!self.snapshot.recognized.is_empty(), |view| {
+                view.child(self.recognized_apps(theme, cx))
+            })
             .into_any_element()
+    }
+
+    fn recognized_apps(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("recognized-apps")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .pb_3()
+            .child(section_label("RECOGNIZED APPS", theme))
+            .child(
+                div()
+                    .px_4()
+                    .pb_1()
+                    .text_size(px(12.0))
+                    .text_color(theme.muted)
+                    .child("Their processes are expected, so Pinch doesn't list them."),
+            )
+            .children(
+                self.snapshot
+                    .recognized
+                    .iter()
+                    .enumerate()
+                    .map(|(index, app)| {
+                        let path = app.path.clone();
+                        div()
+                            .mx_2()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .hover(|s| s.bg(theme.hover))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_size(px(13.0))
+                                            .child(app.name().to_string()),
+                                    )
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_size(px(11.0))
+                                            .text_color(theme.faint)
+                                            .child(app.path.clone()),
+                                    ),
+                            )
+                            .child(
+                                icon_button(
+                                    ("forget", index),
+                                    "icons/eye.svg",
+                                    format!("List {} processes again", app.name()),
+                                    theme.text,
+                                    theme,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _: &ClickEvent, window, cx| {
+                                        this.send(
+                                            Request::Forget { app: path.clone() },
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                )),
+                            )
+                    }),
+            )
     }
 
     fn configuration_button(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1260,11 +1371,11 @@ impl Popover {
                     .size(px(18.0))
                     .text_color(theme.muted),
             )
-            .tooltip(|_, cx| cx.new(|_| ConfigurationTooltip).into())
+            .tooltip(|_, cx| cx.new(|_| TextTooltip("Configuration".into())).into())
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 this.confirm_stop = None;
                 this.screen = Screen::Configuration;
-                window.resize(size(px(WIDTH), px(CONFIGURATION_HEIGHT)));
+                window.resize(size(px(WIDTH), px(configuration_height(&this.snapshot))));
                 cx.notify();
             }))
     }
@@ -1397,9 +1508,9 @@ fn agent_group_label(group: &ProcessGroup, theme: Theme) -> impl IntoElement {
     header.tooltip(move |_, cx| cx.new(|_| AgentGroupDetails(details.clone())).into())
 }
 
-struct ConfigurationTooltip;
+struct TextTooltip(SharedString);
 
-impl Render for ConfigurationTooltip {
+impl Render for TextTooltip {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::for_appearance(window.appearance());
         div()
@@ -1411,7 +1522,7 @@ impl Render for ConfigurationTooltip {
             .border_color(theme.border)
             .text_color(theme.text)
             .text_size(px(11.0))
-            .child("Configuration")
+            .child(self.0.clone())
     }
 }
 
@@ -1468,6 +1579,35 @@ fn section_label(text: impl Into<SharedString>, theme: Theme) -> impl IntoElemen
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme.faint)
         .child(text.into())
+}
+
+fn icon_button(
+    id: impl Into<gpui::ElementId>,
+    icon: &'static str,
+    tooltip: impl Into<SharedString>,
+    hover: Rgba,
+    theme: Theme,
+) -> gpui::Stateful<gpui::Div> {
+    let tooltip = tooltip.into();
+    div()
+        .id(id.into())
+        .group("icon-button")
+        .size(px(22.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_md()
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.hover))
+        .child(
+            gpui::svg()
+                .path(icon)
+                .size(px(14.0))
+                .text_color(theme.muted)
+                .group_hover("icon-button", move |s| s.text_color(hover)),
+        )
+        .tooltip(move |_, cx| cx.new(|_| TextTooltip(tooltip.clone())).into())
 }
 
 fn button(
