@@ -279,13 +279,14 @@ impl Popover {
 
     /// Send a request in the background, then refresh straight away.
     fn send(&mut self, req: Request, window: &mut Window, cx: &mut Context<Self>) {
-        let clearing = matches!(&req, Request::Clear { .. });
+        let return_to_list = matches!(&req, Request::Stop { .. } | Request::Clear { .. });
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { request(&req) })
                 .await;
-            let cleared = clearing && matches!(&result, Ok(Response::Ok));
+            let show_list =
+                return_to_list && matches!(&result, Ok(Response::Ok | Response::Process { .. }));
             let mut snapshot = cx.background_executor().spawn(async { fetch() }).await;
             match result {
                 Ok(Response::Error { message }) => snapshot.error = Some(message),
@@ -294,7 +295,7 @@ impl Popover {
             }
             let _ = this.update_in(cx, |this, window, cx| {
                 this.apply(snapshot, None, window, cx);
-                if cleared {
+                if show_list {
                     this.back(window, cx);
                 }
             });
@@ -984,8 +985,9 @@ impl Popover {
                             )),
                         )
                         .child(
-                            button("confirm-stop", "Stop this process", true, theme).on_click(
-                                cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            button("confirm-stop", "Stop this process", false, theme)
+                                .bg(theme.border)
+                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                     this.confirm_stop = None;
                                     window.resize(size(
                                         px(WIDTH),
@@ -998,8 +1000,7 @@ impl Popover {
                                         window,
                                         cx,
                                     );
-                                }),
-                            ),
+                                })),
                         ),
                 )
                 .into_any_element();
@@ -1155,8 +1156,9 @@ impl Popover {
         let mut actions = div().flex().flex_none().gap_2();
         if alive {
             actions = actions.child(
-                button("log-stop", "Stop", true, theme).on_click(cx.listener(
-                    move |this, _: &ClickEvent, window, cx| {
+                button("log-stop", "Stop", false, theme)
+                    .bg(theme.border)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         this.send(
                             Request::Stop {
                                 name: stop_name.clone(),
@@ -1164,8 +1166,7 @@ impl Popover {
                             window,
                             cx,
                         );
-                    },
-                )),
+                    })),
             );
         }
         if let Some(process) = process.filter(|p| !p.status.is_alive()) {
