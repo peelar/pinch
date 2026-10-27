@@ -1,5 +1,11 @@
 # pinch
 
+## 0.2.4
+
+### Patch Changes
+
+- 8fd1e80: Return to the process list after stopping a process and distinguish neutral Stop buttons from red Remove buttons.
+
 ## 0.2.3
 
 ### Patch Changes
