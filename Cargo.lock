@@ -4055,6 +4055,8 @@ dependencies = [
  "async-channel",
  "gpui",
  "gpui_platform",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "pinch-client",
  "pinch-proto",
 ]

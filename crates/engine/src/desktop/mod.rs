@@ -41,10 +41,12 @@ pub fn run(runtime: EngineRuntime) -> Result<()> {
     let ui = Arc::new(ui::Launcher::default());
     let first_launch_ui = Arc::clone(&ui);
     let update_ui = Arc::clone(&ui);
+    let open_ui = Arc::clone(&ui);
     let action_engine = Arc::clone(&engine);
     let callbacks = Callbacks {
         on_update_install: Box::new(move || update_ui.stop()),
         on_click: Box::new(move |anchor| ui.toggle(anchor)),
+        on_open: Box::new(move |anchor| open_ui.show(anchor)),
         on_action: Box::new(move |decision, action| {
             let answer = match action {
                 Action::Kill => DecisionAnswer::Kill,
@@ -74,7 +76,7 @@ pub fn run(runtime: EngineRuntime) -> Result<()> {
             {
                 std::thread::spawn(move || {
                     std::thread::sleep(Duration::from_secs(1));
-                    first_launch_ui.toggle(None);
+                    first_launch_ui.show(None);
                 });
             }
         },
