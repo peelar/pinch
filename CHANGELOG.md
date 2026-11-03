@@ -1,5 +1,11 @@
 # pinch
 
+## 0.2.5
+
+### Patch Changes
+
+- 468052e: Open the popover reliably from the menu bar icon and from notification clicks.
+
 ## 0.2.4
 
 ### Patch Changes
