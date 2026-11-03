@@ -57,7 +57,11 @@ fn main() {
                             .background_executor()
                             .spawn(async { view::fetch() })
                             .await;
-                        let anchor = line
+                        // `toggle` comes from the menu bar icon, `show` from
+                        // notifications and first launch; either may carry `x,y`.
+                        let (verb, rest) = line.split_once(' ').unwrap_or((line.as_str(), ""));
+                        let show_only = verb == "show";
+                        let anchor = rest
                             .split_once(',')
                             .and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)));
                         cx.update(|cx| {
@@ -66,14 +70,22 @@ fn main() {
                             }
                             if let Some(handle) = window.take() {
                                 let handle: gpui::WindowHandle<view::Popover> = handle;
-                                if handle
-                                    .update(cx, |_, window, _| window.remove_window())
-                                    .is_ok()
-                                {
-                                    return;
-                                }
-                                if view::recently_closed() {
-                                    return;
+                                match handle.update(cx, |_, window, _| window.is_window_active()) {
+                                    // Close only a popover the user can see and is using.
+                                    Ok(true) if !show_only => {
+                                        let _ = handle
+                                            .update(cx, |_, window, _| window.remove_window());
+                                        return;
+                                    }
+                                    // An inactive window never closes on blur, so it
+                                    // may be hidden behind others: replace it.
+                                    Ok(_) => {
+                                        let _ = handle
+                                            .update(cx, |_, window, _| window.remove_window());
+                                    }
+                                    // The click that blurred and closed it: stay closed.
+                                    Err(_) if !show_only && view::recently_closed() => return,
+                                    Err(_) => {}
                                 }
                             }
                             window = Some(open(anchor, snapshot, true, cx));
@@ -129,7 +141,15 @@ fn open(
         )
         .unwrap();
     if show {
-        cx.activate(true);
+        activate();
     }
     handle
+}
+
+/// Bring this app forward. GPUI's `activate` uses `activateIgnoringOtherApps`,
+/// which macOS 14+ ignores; `activate` succeeds once pinchd has yielded to us.
+fn activate() {
+    if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
+        objc2_app_kit::NSApplication::sharedApplication(mtm).activate();
+    }
 }

@@ -21,8 +21,9 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{AnyThread, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSCellImagePosition, NSImage, NSScreen,
-    NSStatusBar, NSStatusBarButton, NSStatusItem, NSVariableStatusItemLength,
+    NSApplication, NSApplicationActivationPolicy, NSCellImagePosition, NSImage,
+    NSRunningApplication, NSScreen, NSStatusBar, NSStatusBarButton, NSStatusItem,
+    NSVariableStatusItemLength,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSBundle, NSData, NSObject, NSObjectProtocol, NSSet, NSSize,
@@ -56,7 +57,10 @@ pub enum Action {
 /// buttons), so keep them quick: hand the work off and return.
 pub struct Callbacks {
     pub on_update_install: Box<dyn Fn() + Send + Sync>,
+    /// The menu bar icon was clicked: toggle the popover.
     pub on_click: Box<dyn Fn(Option<Anchor>) + Send + Sync>,
+    /// A notification was clicked: show the popover, never close it.
+    pub on_open: Box<dyn Fn(Option<Anchor>) + Send + Sync>,
     pub on_action: Box<dyn Fn(String, Action) + Send + Sync>,
 }
 
@@ -132,6 +136,21 @@ fn remove_orphaned_notifications() {
     });
     UNUserNotificationCenter::currentNotificationCenter()
         .getDeliveredNotificationsWithCompletionHandler(&done);
+}
+
+/// Let the process `pid` come to the front. Since macOS 14 an app may only
+/// activate when the active app hands activation over, and the user clicked
+/// us, not `pinch-ui`. No-op off the main thread.
+pub fn yield_activation_to(pid: u32) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return;
+    };
+    if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+        NSApplication::sharedApplication(mtm).yieldActivationToApplication(&app);
+    }
 }
 
 static CALLBACKS: OnceLock<Callbacks> = OnceLock::new();
@@ -404,7 +423,7 @@ pub fn run(
         if OPEN_REQUESTED.swap(false, Ordering::SeqCst)
             && let Some(callbacks) = CALLBACKS.get()
         {
-            (callbacks.on_click)(anchor_of(&timer_button, mtm));
+            (callbacks.on_open)(anchor_of(&timer_button, mtm));
         }
     });
     let _timer = unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.2, true, &tick) };

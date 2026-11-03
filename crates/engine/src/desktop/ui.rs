@@ -51,16 +51,30 @@ impl Launcher {
         }
     }
 
+    /// Open the popover, or close it if it is the active window.
     pub fn toggle(&self, anchor: Option<Anchor>) {
+        self.send("toggle", anchor);
+    }
+
+    /// Open the popover, or bring an open one forward.
+    pub fn show(&self, anchor: Option<Anchor>) {
+        self.send("show", anchor);
+    }
+
+    fn send(&self, verb: &str, anchor: Option<Anchor>) {
         let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
         Self::ensure_running(&mut child);
-        if let Some(input) = child.as_mut().and_then(|p| p.stdin.as_mut()) {
-            let command = anchor.map_or_else(
-                || "toggle".into(),
-                |a| format!("{},{}", a.x_center, a.y_bottom),
-            );
+        let Some(process) = child.as_mut() else {
+            return;
+        };
+        pinch_macos::yield_activation_to(process.id());
+        if let Some(input) = process.stdin.as_mut() {
+            let command = match anchor {
+                Some(a) => format!("{verb} {},{}", a.x_center, a.y_bottom),
+                None => verb.to_owned(),
+            };
             if let Err(e) = writeln!(input, "{command}") {
-                eprintln!("pinchd: could not toggle pinch-ui: {e}");
+                eprintln!("pinchd: could not {verb} pinch-ui: {e}");
             }
         }
     }
