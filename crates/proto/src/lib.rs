@@ -210,7 +210,8 @@ impl ProcessInfo {
     }
 }
 
-fn is_installed_app(path: &str) -> bool {
+/// A bundle directly in `/Applications` or `~/Applications`.
+pub fn is_installed_app(path: &str) -> bool {
     let path = std::path::Path::new(path);
     path.extension().is_some_and(|ext| ext == "app")
         && path.parent().is_some_and(|parent| {
@@ -290,6 +291,33 @@ pub struct SystemMetrics {
     pub memory_available_bytes: u64,
     pub swap_used_bytes: u64,
     pub sampled_at_ms: u64,
+    /// The kernel's own verdict on memory; `None` where the platform has none.
+    #[serde(default)]
+    pub memory_pressure: Option<MemoryPressure>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryPressure {
+    Normal,
+    Warning,
+    Critical,
+}
+
+/// Whole-computer usage of one app (all its helper processes) or of all
+/// processes sharing a name, sampled with the system metrics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppUsage {
+    pub name: String,
+    /// Outermost `.app` bundle when the processes belong to one.
+    pub app_bundle: Option<String>,
+    /// The app's main process: the one a normal Quit is sent to. `None` for
+    /// non-app groups and for apps Pinch must not offer to quit.
+    pub quit_pid: Option<u32>,
+    pub process_count: u32,
+    /// Sum over processes, Activity Monitor style: 100% is one full core.
+    pub cpu_percent: f32,
+    pub memory_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -422,6 +450,9 @@ pub enum Response {
         updates: UpdateStatus,
         #[serde(default)]
         recognized: Vec<RecognizedApp>,
+        /// Heaviest apps on the whole computer, by CPU and by memory.
+        #[serde(default)]
+        apps: Vec<AppUsage>,
     },
     Logs {
         text: String,
@@ -546,6 +577,7 @@ mod tests {
             notifications: NotificationStatus::Enabled,
             updates: UpdateStatus::default(),
             recognized: vec![],
+            apps: vec![],
             system: SystemMetrics {
                 cpu_percent: Some(42.0),
                 memory_used_bytes: 12_000,
@@ -553,6 +585,7 @@ mod tests {
                 memory_available_bytes: 4_000,
                 swap_used_bytes: 500,
                 sampled_at_ms: 123_456,
+                memory_pressure: Some(MemoryPressure::Warning),
             },
         };
         let json = serde_json::to_string(&response).unwrap();
@@ -565,6 +598,7 @@ mod tests {
         assert_eq!(system.memory_available_bytes, 4_000);
         assert_eq!(system.swap_used_bytes, 500);
         assert_eq!(system.sampled_at_ms, 123_456);
+        assert_eq!(system.memory_pressure, Some(MemoryPressure::Warning));
     }
 
     #[test]

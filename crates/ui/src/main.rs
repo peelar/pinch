@@ -3,6 +3,7 @@
 //! See DEVELOPMENT.md.
 
 mod icons;
+mod panel;
 mod process_list;
 mod resources;
 mod theme;
@@ -44,19 +45,13 @@ fn main() {
                 }
             }
         });
-        let warmup = open(None, view::cached(), false, cx);
+        // One hidden panel for the life of the process. It refreshes its own
+        // snapshot every second, so it is current whenever it is shown.
+        let popover = open(None, view::cached(), false, cx);
         cx.spawn(async move |cx| {
-            let mut warmup = Some(warmup);
-            let mut window = None;
             loop {
                 match rx.recv().await {
                     Ok(line) => {
-                        // Read the engine's ready-to-render counters off the UI
-                        // thread before constructing a visible window.
-                        let snapshot = cx
-                            .background_executor()
-                            .spawn(async { view::fetch() })
-                            .await;
                         // `toggle` comes from the menu bar icon, `show` from
                         // notifications and first launch; either may carry `x,y`.
                         let (verb, rest) = line.split_once(' ').unwrap_or((line.as_str(), ""));
@@ -65,30 +60,21 @@ fn main() {
                             .split_once(',')
                             .and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)));
                         cx.update(|cx| {
-                            if let Some(handle) = warmup.take() {
-                                let _ = handle.update(cx, |_, window, _| window.remove_window());
-                            }
-                            if let Some(handle) = window.take() {
-                                let handle: gpui::WindowHandle<view::Popover> = handle;
-                                match handle.update(cx, |_, window, _| window.is_window_active()) {
-                                    // Close only a popover the user can see and is using.
-                                    Ok(true) if !show_only => {
-                                        let _ = handle
-                                            .update(cx, |_, window, _| window.remove_window());
+                            let _ = popover.update(cx, |this, window, cx| {
+                                if panel::is_visible(window) {
+                                    // Close only a popover the user is using;
+                                    // otherwise bring it forward again.
+                                    if window.is_window_active() && !show_only {
+                                        panel::hide(window);
                                         return;
                                     }
-                                    // An inactive window never closes on blur, so it
-                                    // may be hidden behind others: replace it.
-                                    Ok(_) => {
-                                        let _ = handle
-                                            .update(cx, |_, window, _| window.remove_window());
-                                    }
+                                } else if !show_only && view::recently_closed() {
                                     // The click that blurred and closed it: stay closed.
-                                    Err(_) if !show_only && view::recently_closed() => return,
-                                    Err(_) => {}
+                                    return;
                                 }
-                            }
-                            window = Some(open(anchor, snapshot, true, cx));
+                                this.reopen(window, cx);
+                                panel::show(window, anchor);
+                            });
                         });
                     }
                     Err(_) => {
@@ -108,6 +94,7 @@ fn open(
     show: bool,
     cx: &mut App,
 ) -> gpui::WindowHandle<view::Popover> {
+    let resident = std::env::args().any(|a| a == "--resident");
     let height = view::height_for(&initial);
     let window_size = size(px(view::WIDTH), px(height));
     let bounds = match anchor {
@@ -129,7 +116,15 @@ fn open(
                 // native rounded corners and desktop vibrancy behind it.
                 titlebar: None,
                 window_background: WindowBackgroundAppearance::Blurred,
-                kind: WindowKind::Normal,
+                // From the menu bar, a non-activating panel takes keyboard
+                // focus without making pinch-ui the active app, so opening
+                // never depends on macOS agreeing to hand activation over
+                // from pinchd. Previews stay ordinary windows.
+                kind: if resident {
+                    WindowKind::PopUp
+                } else {
+                    WindowKind::Normal
+                },
                 is_resizable: false,
                 is_movable: false,
                 is_minimizable: false,
@@ -140,14 +135,14 @@ fn open(
             |window, cx| cx.new(|cx| view::Popover::new(initial, window, cx)),
         )
         .unwrap();
-    if show {
+    if show && !resident {
         activate();
     }
     handle
 }
 
-/// Bring this app forward. GPUI's `activate` uses `activateIgnoringOtherApps`,
-/// which macOS 14+ ignores; `activate` succeeds once pinchd has yielded to us.
+/// Bring a preview window forward. GPUI's `activate` uses
+/// `activateIgnoringOtherApps`, which macOS 14+ ignores.
 fn activate() {
     if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
         objc2_app_kit::NSApplication::sharedApplication(mtm).activate();

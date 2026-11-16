@@ -18,13 +18,13 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use pinch_client::{home, logs_dir, now_ms};
 use pinch_proto::{
-    Decision, DecisionAnswer, Metrics, Origin, ProcessId, ProcessInfo, ProcessKind, RecognizedApp,
-    Spawn, Status, SystemMetrics,
+    AppUsage, Decision, DecisionAnswer, Metrics, Origin, ProcessId, ProcessInfo, ProcessKind,
+    RecognizedApp, Spawn, Status, SystemMetrics,
 };
 use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
-use crate::discovery;
+use crate::{discovery, usage};
 
 pub struct Config {
     /// How long a server may be silent and unconnected before we ask about it.
@@ -81,17 +81,24 @@ struct Inner {
     recognized: Vec<RecognizedApp>,
     recognized_processes: Vec<ProcessId>,
     recognized_path: PathBuf,
-    sys: System,
     system_metrics: SystemMetrics,
-    cpu_totals: HashMap<u32, u64>,
-    system_sampled_at: Option<Instant>,
+    apps: Vec<AppUsage>,
     counter: u64,
     last_decisions: Vec<String>,
     last_activity_saved_ms: u64,
 }
 
+/// What only the sampler touches. Refreshing every process on the machine is
+/// slow under load, so it happens here, outside the registry lock.
+struct Sampler {
+    sys: System,
+    cpu_totals: HashMap<u32, u64>,
+    system_sampled_at: Option<Instant>,
+}
+
 pub struct Engine {
     inner: Mutex<Inner>,
+    sampler: Mutex<Sampler>,
     cfg: Config,
     hooks: Hooks,
 }
@@ -105,22 +112,34 @@ fn refresh_kind() -> ProcessRefreshKind {
         .with_cwd(UpdateKind::OnlyIfNotSet)
 }
 
-fn refresh_system_metrics(inner: &mut Inner) {
-    inner.sys.refresh_cpu_usage();
-    inner.sys.refresh_memory();
-    let cpu_percent = inner
+/// A fresh reading of one process, independent of the sampler.
+fn process_system(pid: u32) -> System {
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+        true,
+        refresh_kind(),
+    );
+    sys
+}
+
+fn refresh_system_metrics(sampler: &mut Sampler) -> SystemMetrics {
+    sampler.sys.refresh_cpu_usage();
+    sampler.sys.refresh_memory();
+    let cpu_percent = sampler
         .system_sampled_at
         .filter(|at| at.elapsed() >= sysinfo::MINIMUM_CPU_UPDATE_INTERVAL)
-        .map(|_| inner.sys.global_cpu_usage().clamp(0.0, 100.0));
-    inner.system_sampled_at = Some(Instant::now());
-    inner.system_metrics = SystemMetrics {
+        .map(|_| sampler.sys.global_cpu_usage().clamp(0.0, 100.0));
+    sampler.system_sampled_at = Some(Instant::now());
+    SystemMetrics {
         cpu_percent,
-        memory_used_bytes: inner.sys.used_memory(),
-        memory_total_bytes: inner.sys.total_memory(),
-        memory_available_bytes: inner.sys.available_memory(),
-        swap_used_bytes: inner.sys.used_swap(),
+        memory_used_bytes: sampler.sys.used_memory(),
+        memory_total_bytes: sampler.sys.total_memory(),
+        memory_available_bytes: sampler.sys.available_memory(),
+        swap_used_bytes: sampler.sys.used_swap(),
         sampled_at_ms: now_ms(),
-    };
+        memory_pressure: usage::memory_pressure(),
+    }
 }
 
 impl Engine {
@@ -156,7 +175,12 @@ impl Engine {
 
         let recognized_path = home().join("recognized.json");
         let (recognized, recognized_processes) = load_recognized(&recognized_path);
-        let mut inner = Inner {
+        let mut sampler = Sampler {
+            sys,
+            cpu_totals: HashMap::new(),
+            system_sampled_at: None,
+        };
+        let inner = Inner {
             entries,
             last_decisions: decisions.iter().map(|d| d.id.clone()).collect(),
             decisions,
@@ -164,16 +188,14 @@ impl Engine {
             recognized,
             recognized_processes,
             recognized_path,
-            sys,
-            system_metrics: SystemMetrics::default(),
-            cpu_totals: HashMap::new(),
-            system_sampled_at: None,
+            system_metrics: refresh_system_metrics(&mut sampler),
+            apps: Vec::new(),
             counter: 0,
             last_activity_saved_ms: now,
         };
-        refresh_system_metrics(&mut inner);
         let engine = Arc::new(Self {
             inner: Mutex::new(inner),
+            sampler: Mutex::new(sampler),
             cfg,
             hooks,
         });
@@ -243,6 +265,7 @@ impl Engine {
         Vec<Decision>,
         SystemMetrics,
         Vec<RecognizedApp>,
+        Vec<AppUsage>,
     ) {
         let inner = self.lock();
         let mut processes: Vec<ProcessInfo> =
@@ -257,6 +280,7 @@ impl Engine {
             inner.decisions.clone(),
             inner.system_metrics,
             inner.recognized.clone(),
+            inner.apps.clone(),
         )
     }
 
@@ -364,12 +388,7 @@ impl Engine {
         if pid <= 1 || pid == std::process::id() || confirmed.origin != Origin::Unmanaged {
             bail!("refusing to terminate a protected process");
         }
-        let mut fresh = System::new();
-        fresh.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
-            true,
-            refresh_kind(),
-        );
+        let fresh = process_system(pid);
         let process = fresh
             .process(Pid::from_u32(pid))
             .ok_or_else(|| anyhow!("process has already exited"))?;
@@ -485,13 +504,9 @@ impl Engine {
         match (answer, idx) {
             (DecisionAnswer::Kill, Some(idx)) => {
                 let pid = inner.entries[idx].info.pid.context("process has no PID")?;
-                inner.sys.refresh_processes_specifics(
-                    ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
-                    true,
-                    refresh_kind(),
-                );
+                let sys = process_system(pid);
                 if inner.entries[idx].info.origin != Origin::Managed
-                    || !is_same_process(&inner.sys, &inner.entries[idx])
+                    || !is_same_process(&sys, &inner.entries[idx])
                 {
                     drop_decisions_for(&mut inner, &decision.process);
                     sync_attention(&self.hooks, &mut inner);
@@ -561,13 +576,8 @@ impl Engine {
             .with_context(|| format!("failed to start `{}`", spawn.command.join(" ")))?;
         let pid = child.id();
 
-        inner.sys.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
-            true,
-            refresh_kind(),
-        );
-        let start_time_s = inner
-            .sys
+        let sys = process_system(pid);
+        let start_time_s = sys
             .process(Pid::from_u32(pid))
             .map_or(0, |p| p.start_time());
 
@@ -582,8 +592,7 @@ impl Engine {
             status: Status::Running,
             command: spawn.command.clone(),
             cwd: spawn.cwd.clone(),
-            executable: inner
-                .sys
+            executable: sys
                 .process(Pid::from_u32(pid))
                 .and_then(|p| p.exe())
                 .map(|p| p.to_string_lossy().into_owned()),
@@ -638,16 +647,19 @@ impl Engine {
     /// One sampling pass: refresh metrics and ports, discover unmanaged
     /// listeners, and evaluate the staleness rule.
     pub fn tick(&self) {
-        // Socket discovery can be slow; run it before taking the lock.
+        // Socket discovery and the process scan are slow, especially when the
+        // machine is busy; do both before taking the registry lock so requests
+        // such as the popover's snapshot never wait on them. The sampler lock
+        // only serializes concurrent ticks.
         let listeners = discovery::listeners();
         let connected_ports = discovery::established_local_ports();
 
-        let mut inner = self.lock();
-        refresh_system_metrics(&mut inner);
-        inner
+        let mut sampler = self.sampler.lock().unwrap_or_else(|e| e.into_inner());
+        let system_metrics = refresh_system_metrics(&mut sampler);
+        sampler
             .sys
             .refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind());
-        let cpu_totals: HashMap<u32, u64> = inner
+        let cpu_totals: HashMap<u32, u64> = sampler
             .sys
             .processes()
             .iter()
@@ -656,15 +668,21 @@ impl Engine {
         let cpu_advanced: HashSet<u32> = cpu_totals
             .iter()
             .filter(|(pid, total)| {
-                inner
+                sampler
                     .cpu_totals
                     .get(pid)
                     .is_some_and(|previous| *total > previous)
             })
             .map(|(pid, _)| *pid)
             .collect();
-        inner.cpu_totals = cpu_totals;
-        let children = children_map(&inner.sys);
+        sampler.cpu_totals = cpu_totals;
+        let sys = &sampler.sys;
+        let children = children_map(sys);
+        let apps = usage::top_apps(sys, &cpu_advanced);
+
+        let mut inner = self.lock();
+        inner.system_metrics = system_metrics;
+        inner.apps = apps;
         let now = now_ms();
         let mut managed_pids: HashSet<u32> = HashSet::new();
         let mut changed = false;
@@ -674,7 +692,7 @@ impl Engine {
             if !inner.entries[i].info.status.is_alive() {
                 continue;
             }
-            if !is_same_process(&inner.sys, &inner.entries[i]) {
+            if !is_same_process(sys, &inner.entries[i]) {
                 // Adopted after an engine restart, so there is no waiter thread.
                 let id = inner.entries[i].info.id.clone();
                 inner.entries[i].info.status = Status::Exited { code: None };
@@ -690,7 +708,7 @@ impl Engine {
             let tree = descendants(&children, root);
             managed_pids.extend(&tree);
 
-            let (cpu, rss) = tree_usage(&inner.sys, &tree, &cpu_advanced);
+            let (cpu, rss) = tree_usage(sys, &tree, &cpu_advanced);
             let mut ports: Vec<u16> = listeners
                 .iter()
                 .filter(|(pid, _)| tree.contains(pid))
@@ -809,7 +827,7 @@ impl Engine {
         }
         let mut unmanaged = Vec::new();
         for (pid, mut ports) in by_pid {
-            let Some(proc_) = inner.sys.process(Pid::from_u32(pid)) else {
+            let Some(proc_) = sys.process(Pid::from_u32(pid)) else {
                 continue;
             };
             let exe = proc_.name().to_string_lossy().to_string();
@@ -819,7 +837,7 @@ impl Engine {
             ports.sort_unstable();
             ports.dedup();
             let tree = descendants(&children, pid);
-            let (cpu, rss) = tree_usage(&inner.sys, &tree, &cpu_advanced);
+            let (cpu, rss) = tree_usage(sys, &tree, &cpu_advanced);
             let cwd = proc_
                 .cwd()
                 .map(|p| p.to_string_lossy().into_owned())
@@ -836,7 +854,7 @@ impl Engine {
                 .as_deref()
                 .and_then(app_bundle_path)
                 .or_else(|| command.iter().find_map(|arg| app_bundle_path(arg)));
-            let launcher_app = ancestor_app(&inner.sys, Pid::from_u32(pid));
+            let launcher_app = ancestor_app(sys, Pid::from_u32(pid));
             let label = app_bundle
                 .as_deref()
                 .and_then(|path| Path::new(path).file_stem())
@@ -876,7 +894,6 @@ impl Engine {
         }
         unmanaged.sort_by(|a, b| a.ports.cmp(&b.ports));
         inner.unmanaged = unmanaged;
-        let sys = &inner.sys;
         let live_recognized: Vec<_> = inner
             .recognized_processes
             .iter()
@@ -1202,7 +1219,7 @@ fn ancestor_app(sys: &System, pid: Pid) -> Option<String> {
     None
 }
 
-fn app_bundle_path(path: &str) -> Option<String> {
+pub(crate) fn app_bundle_path(path: &str) -> Option<String> {
     if !Path::new(path).is_absolute() {
         return None;
     }
@@ -1235,13 +1252,16 @@ mod identity_tests {
                 recognized: vec![],
                 recognized_processes: vec![],
                 recognized_path: PathBuf::new(),
-                sys: System::new(),
                 system_metrics: SystemMetrics::default(),
-                cpu_totals: HashMap::new(),
-                system_sampled_at: None,
+                apps: Vec::new(),
                 counter: 0,
                 last_decisions: Vec::new(),
                 last_activity_saved_ms: 0,
+            }),
+            sampler: Mutex::new(Sampler {
+                sys: System::new(),
+                cpu_totals: HashMap::new(),
+                system_sampled_at: None,
             }),
             cfg: Config {
                 stale_after: Duration::from_secs(3600),
@@ -1331,13 +1351,16 @@ mod identity_tests {
                 recognized: vec![],
                 recognized_processes: vec![],
                 recognized_path,
-                sys: System::new(),
                 system_metrics: SystemMetrics::default(),
-                cpu_totals: HashMap::new(),
-                system_sampled_at: None,
+                apps: Vec::new(),
                 counter: 0,
                 last_decisions: Vec::new(),
                 last_activity_saved_ms: 0,
+            }),
+            sampler: Mutex::new(Sampler {
+                sys: System::new(),
+                cpu_totals: HashMap::new(),
+                system_sampled_at: None,
             }),
             cfg: Config {
                 stale_after: Duration::from_secs(3600),

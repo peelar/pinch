@@ -93,7 +93,7 @@ fn dispatch(
                 process: engine.run(spawn)?,
             },
             Request::Snapshot => {
-                let (processes, decisions, system, recognized) = engine.snapshot();
+                let (processes, decisions, system, recognized, apps) = engine.snapshot();
                 Response::Snapshot {
                     processes,
                     decisions,
@@ -101,6 +101,7 @@ fn dispatch(
                     notifications: notifications(),
                     updates: (updates.status)(),
                     recognized,
+                    apps,
                 }
             }
             Request::CheckForUpdates => {

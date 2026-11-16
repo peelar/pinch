@@ -1,37 +1,106 @@
 //! Compact views of the engine's cached whole-computer metrics.
 
-use gpui::{App, Context, Entity, FontWeight, IntoElement, Render, Window, div, prelude::*, px};
-use pinch_proto::SystemMetrics;
+use gpui::{
+    App, ClickEvent, Context, Entity, FontWeight, IntoElement, Render, Rgba, Window, div,
+    prelude::*, px,
+};
+use pinch_proto::{AppUsage, MemoryPressure, SystemMetrics};
 
 use crate::theme::Theme;
 
-pub fn indicators(source: &Entity<SystemMetrics>, theme: Theme, cx: &App) -> impl IntoElement {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Measure {
+    Cpu,
+    Memory,
+}
+
+/// The footer meters; clicking one opens what is using that resource.
+pub fn indicators(
+    source: &Entity<SystemMetrics>,
+    theme: Theme,
+    on_open: impl Fn(Measure, &mut Window, &mut App) + Clone + 'static,
+    cx: &App,
+) -> impl IntoElement {
     let usage = *source.read(cx);
+    let open_memory = on_open.clone();
     div()
         .flex()
         .items_center()
         .gap_3()
-        .child(meter("CPU", usage.cpu_percent, source.clone(), theme))
-        .child(meter(
-            "RAM",
-            (usage.memory_total_bytes > 0)
-                .then(|| usage.memory_used_bytes as f32 / usage.memory_total_bytes as f32 * 100.0),
-            source.clone(),
-            theme,
-        ))
+        .child(
+            meter("CPU", usage.cpu_percent, None, source.clone(), theme)
+                .on_click(move |_: &ClickEvent, window, cx| on_open(Measure::Cpu, window, cx)),
+        )
+        .child(
+            meter(
+                "RAM",
+                memory_percent(&usage),
+                usage.memory_pressure,
+                source.clone(),
+                theme,
+            )
+            .on_click(move |_: &ClickEvent, window, cx| open_memory(Measure::Memory, window, cx)),
+        )
+}
+
+pub fn memory_percent(usage: &SystemMetrics) -> Option<f32> {
+    (usage.memory_total_bytes > 0)
+        .then(|| usage.memory_used_bytes as f32 / usage.memory_total_bytes as f32 * 100.0)
+}
+
+/// Meter color. macOS fills memory with caches on purpose, so when the kernel
+/// reports pressure, that decides the RAM color rather than "used".
+pub fn level_color(percent: Option<f32>, pressure: Option<MemoryPressure>, theme: Theme) -> Rgba {
+    match (pressure, percent) {
+        (Some(MemoryPressure::Critical), _) => theme.danger,
+        (Some(MemoryPressure::Warning), _) => theme.stale,
+        (Some(MemoryPressure::Normal), _) => theme.running,
+        (None, Some(p)) if p >= 85.0 => theme.danger,
+        (None, Some(p)) if p >= 60.0 => theme.stale,
+        _ => theme.running,
+    }
+}
+
+pub fn pressure_label(pressure: Option<MemoryPressure>) -> Option<&'static str> {
+    pressure.map(|p| match p {
+        MemoryPressure::Normal => "Memory pressure normal",
+        MemoryPressure::Warning => "Memory pressure high",
+        MemoryPressure::Critical => "Memory pressure critical",
+    })
+}
+
+/// Ask an app to quit the normal way, as the Dock's Quit does, so it can save
+/// work or refuse. Checks that the PID still belongs to the same app.
+pub fn quit(app: &AppUsage) -> Result<(), String> {
+    use objc2_app_kit::NSRunningApplication;
+    let (Some(pid), Some(bundle)) = (app.quit_pid, app.app_bundle.as_deref()) else {
+        return Err(format!("{} can't be quit from Pinch", app.name));
+    };
+    let running = i32::try_from(pid)
+        .ok()
+        .and_then(NSRunningApplication::runningApplicationWithProcessIdentifier)
+        .filter(|running| {
+            running
+                .bundleURL()
+                .and_then(|url| url.path())
+                .is_some_and(|path| path.to_string() == bundle)
+        })
+        .ok_or_else(|| format!("{} is no longer running", app.name))?;
+    if running.terminate() {
+        Ok(())
+    } else {
+        Err(format!("{} did not accept the request to quit", app.name))
+    }
 }
 
 fn meter(
     label: &'static str,
     percent: Option<f32>,
+    pressure: Option<MemoryPressure>,
     source: Entity<SystemMetrics>,
     theme: Theme,
-) -> impl IntoElement {
-    let fill = match percent {
-        Some(p) if p >= 85.0 => theme.danger,
-        Some(p) if p >= 60.0 => theme.stale,
-        _ => theme.running,
-    };
+) -> gpui::Stateful<gpui::Div> {
+    let fill = level_color(percent, pressure, theme);
     let filled = percent.map(|p| (p.clamp(0.0, 100.0) / 100.0 * 8.0).ceil() as usize);
     div()
         .id(label)
@@ -41,6 +110,7 @@ fn meter(
         .px_1()
         .py_1()
         .rounded_md()
+        .cursor_pointer()
         .hover(|s| s.bg(theme.hover))
         .text_size(px(9.0))
         .text_color(theme.muted)
@@ -98,6 +168,9 @@ impl Render for Details {
                     bytes(usage.swap_used_bytes)
                 ),
             ]
+            .into_iter()
+            .chain(pressure_label(usage.memory_pressure).map(str::to_owned))
+            .collect()
         };
         div()
             .p_3()
@@ -122,12 +195,12 @@ impl Render for Details {
                 div()
                     .text_size(px(10.0))
                     .text_color(theme.muted)
-                    .child("Whole computer · sampled every 2 seconds"),
+                    .child("Whole computer · click to see what's using it"),
             )
     }
 }
 
-fn bytes(n: u64) -> String {
+pub fn bytes(n: u64) -> String {
     if n >= 1024 * 1024 * 1024 {
         format!("{:.1} GiB", n as f64 / (1024.0 * 1024.0 * 1024.0))
     } else {

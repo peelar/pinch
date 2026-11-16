@@ -14,9 +14,9 @@ use pinch_proto::{
 };
 
 use crate::process_list::ProcessList;
-use crate::resources;
+use crate::resources::{self, Measure};
 use crate::theme::Theme;
-use pinch_proto::{NotificationStatus, SystemMetrics};
+use pinch_proto::{AppUsage, NotificationStatus, SystemMetrics};
 
 pub const WIDTH: f32 = 400.0;
 const LOG_HEIGHT: f32 = 520.0;
@@ -31,6 +31,7 @@ pub struct Snapshot {
     pub processes: Vec<ProcessInfo>,
     pub decisions: Vec<Decision>,
     pub recognized: Vec<RecognizedApp>,
+    pub apps: Vec<AppUsage>,
     pub error: Option<String>,
     /// Offer to install the pinch skill into detected agent harnesses.
     pub onboarding: bool,
@@ -47,10 +48,14 @@ pub fn recently_closed() -> bool {
         .is_some_and(|t| t.elapsed() < Duration::from_millis(400))
 }
 
-fn dismiss(window: &mut Window, cx: &mut Context<Popover>) {
-    *CLOSED_AT.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
+pub fn dismiss(window: &mut Window, cx: &mut Context<Popover>) {
     if std::env::args().any(|a| a == "--resident") {
-        window.remove_window();
+        // Hiding resigns key status, which calls back here; record only the
+        // first close so a following click still sees when it happened.
+        if crate::panel::is_visible(window) {
+            *CLOSED_AT.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
+            crate::panel::hide(window);
+        }
     } else {
         cx.quit();
     }
@@ -92,6 +97,7 @@ fn fetch_engine() -> Snapshot {
             notifications,
             updates,
             recognized,
+            apps,
         }) => Snapshot {
             loading: false,
             system,
@@ -100,6 +106,7 @@ fn fetch_engine() -> Snapshot {
             processes,
             decisions,
             recognized,
+            apps,
             error: None,
             onboarding: false,
         },
@@ -158,6 +165,14 @@ fn list_height(snapshot: &Snapshot, recognized_open: bool) -> f32 {
     h.clamp(240.0, 640.0)
 }
 
+/// How many apps the usage screen lists.
+const USAGE_ROWS: usize = 10;
+
+fn usage_height(snapshot: &Snapshot) -> f32 {
+    let rows = snapshot.apps.len().clamp(1, USAGE_ROWS) as f32;
+    (52.0 + 48.0 + rows * 50.0 + 40.0 + 12.0).clamp(240.0, 640.0)
+}
+
 fn configuration_height(snapshot: &Snapshot) -> f32 {
     let recognized = if snapshot.recognized.is_empty() {
         0.0
@@ -171,6 +186,7 @@ enum Screen {
     List,
     Configuration,
     Logs { name: String, text: String },
+    Usage(Measure),
 }
 
 pub struct Popover {
@@ -184,6 +200,8 @@ pub struct Popover {
     confirm_stop: Option<ProcessInfo>,
     stop_details_open: bool,
     recognized_open: bool,
+    /// Main PID of the app whose Quit is awaiting confirmation.
+    confirm_quit: Option<u32>,
 }
 
 impl Popover {
@@ -208,7 +226,7 @@ impl Popover {
             loop {
                 let Ok(logs_for) = this.update(cx, |this, _| match &this.screen {
                     Screen::Logs { name, .. } => Some(name.clone()),
-                    Screen::List | Screen::Configuration => None,
+                    Screen::List | Screen::Configuration | Screen::Usage(_) => None,
                 }) else {
                     break;
                 };
@@ -242,6 +260,7 @@ impl Popover {
             confirm_stop: None,
             stop_details_open: false,
             recognized_open: false,
+            confirm_quit: None,
         }
     }
 
@@ -271,6 +290,9 @@ impl Popover {
             }
             (Screen::Configuration, _) => {
                 window.resize(size(px(WIDTH), px(configuration_height(&self.snapshot))));
+            }
+            (Screen::Usage(_), _) => {
+                window.resize(size(px(WIDTH), px(usage_height(&self.snapshot))));
             }
             _ => {}
         }
@@ -333,8 +355,38 @@ impl Popover {
         cx.notify();
     }
 
+    /// Start from the list each time the resident panel is shown again.
+    pub fn reopen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirm_stop = None;
+        self.confirm_quit = None;
+        self.stop_details_open = false;
+        self.screen = Screen::List;
+        window.resize(size(
+            px(WIDTH),
+            px(list_height(&self.snapshot, self.recognized_open)),
+        ));
+        cx.notify();
+    }
+
+    fn open_usage(&mut self, measure: Measure, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirm_stop = None;
+        self.confirm_quit = None;
+        self.screen = Screen::Usage(measure);
+        window.resize(size(px(WIDTH), px(usage_height(&self.snapshot))));
+        cx.notify();
+    }
+
+    fn quit_app(&mut self, app: &AppUsage, cx: &mut Context<Self>) {
+        self.confirm_quit = None;
+        if let Err(error) = resources::quit(app) {
+            self.snapshot.error = Some(error);
+        }
+        cx.notify();
+    }
+
     fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.screen = Screen::List;
+        self.confirm_quit = None;
         window.resize(size(
             px(WIDTH),
             px(list_height(&self.snapshot, self.recognized_open)),
@@ -353,7 +405,9 @@ impl Popover {
                 return;
             }
             match self.screen {
-                Screen::Logs { .. } | Screen::Configuration => self.back(window, cx),
+                Screen::Logs { .. } | Screen::Configuration | Screen::Usage(_) => {
+                    self.back(window, cx)
+                }
                 Screen::List => dismiss(window, cx),
             }
         }
@@ -1432,6 +1486,292 @@ impl Popover {
             )
     }
 
+    /// Whole-computer usage by app: what to look at when the meters are red.
+    fn usage(&self, measure: Measure, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let system = &self.snapshot.system;
+        let mut apps: Vec<&AppUsage> = self.snapshot.apps.iter().collect();
+        match measure {
+            Measure::Cpu => {
+                // Idle apps are noise when looking for what burns CPU.
+                apps.retain(|a| a.cpu_percent >= 0.5);
+                apps.sort_by(|a, b| b.cpu_percent.total_cmp(&a.cpu_percent))
+            }
+            Measure::Memory => apps.sort_by_key(|a| std::cmp::Reverse(a.memory_bytes)),
+        }
+        apps.truncate(USAGE_ROWS);
+        let empty = apps.is_empty();
+        let value = |app: &AppUsage| match measure {
+            Measure::Cpu => app.cpu_percent as f64,
+            Measure::Memory => app.memory_bytes as f64,
+        };
+        let max = apps.first().map_or(0.0, |a| value(a)).max(f64::EPSILON);
+        let summary = match measure {
+            Measure::Cpu => system.cpu_percent.map_or_else(
+                || "Measuring…".to_string(),
+                |p| format!("{p:.0}% of total CPU capacity in use · 100% per app is one core"),
+            ),
+            Measure::Memory => {
+                let mut parts = vec![format!(
+                    "{} of {} used",
+                    resources::bytes(system.memory_used_bytes),
+                    resources::bytes(system.memory_total_bytes)
+                )];
+                if system.swap_used_bytes > 0 {
+                    parts.push(format!("{} swap", resources::bytes(system.swap_used_bytes)));
+                }
+                parts.extend(resources::pressure_label(system.memory_pressure).map(str::to_owned));
+                parts.join(" · ")
+            }
+        };
+        let level = match measure {
+            Measure::Cpu => resources::level_color(system.cpu_percent, None, theme),
+            Measure::Memory => resources::level_color(
+                resources::memory_percent(system),
+                system.memory_pressure,
+                theme,
+            ),
+        };
+        let tab = |id: &'static str, label: &'static str, target: Measure| {
+            let active = measure == target;
+            div()
+                .id(id)
+                .px_2()
+                .py(px(2.0))
+                .rounded_md()
+                .text_size(px(11.0))
+                .font_weight(FontWeight::MEDIUM)
+                .cursor_pointer()
+                .when(active, |t| t.bg(theme.accent).text_color(theme.on_accent))
+                .when(!active, |t| {
+                    t.text_color(theme.muted).hover(|s| s.bg(theme.hover))
+                })
+                .child(label)
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.open_usage(target, window, cx)
+                }))
+        };
+
+        let rows = apps.into_iter().enumerate().map(|(index, app)| {
+            let (primary, secondary) = match measure {
+                Measure::Cpu => (
+                    format!("{:.0}%", app.cpu_percent),
+                    resources::bytes(app.memory_bytes),
+                ),
+                Measure::Memory => (
+                    resources::bytes(app.memory_bytes),
+                    format!("{:.0}% CPU", app.cpu_percent),
+                ),
+            };
+            let processes = match app.process_count {
+                1 => "1 process".to_string(),
+                n => format!("{n} processes"),
+            };
+            let share = (value(app) / max).clamp(0.0, 1.0) as f32;
+            let confirming = app.quit_pid.is_some() && self.confirm_quit == app.quit_pid;
+            let right = if confirming {
+                let quit = app.clone();
+                div()
+                    .flex()
+                    .flex_none()
+                    .gap_1()
+                    .child(
+                        button(("usage-cancel", index), "Cancel", false, theme).on_click(
+                            cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.confirm_quit = None;
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(
+                        button(("usage-quit-confirm", index), "Quit", true, theme).on_click(
+                            cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.quit_app(&quit, cx)
+                            }),
+                        ),
+                    )
+                    .into_any_element()
+            } else {
+                let pid = app.quit_pid;
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap_2()
+                    .when_some(pid, |right, pid| {
+                        right.child(
+                            button(("usage-quit", index), "Quit", false, theme)
+                                .invisible()
+                                .group_hover("usage-row", |s| s.visible())
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    this.confirm_quit = Some(pid);
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .child(
+                        div()
+                            .w(px(64.0))
+                            .flex()
+                            .flex_col()
+                            .items_end()
+                            .font_family(MONO)
+                            .child(div().text_size(px(12.0)).child(primary))
+                            .child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .text_color(theme.faint)
+                                    .child(secondary),
+                            ),
+                    )
+                    .into_any_element()
+            };
+            div()
+                .id(("usage-row", index))
+                .group("usage-row")
+                .mx_2()
+                .px_2()
+                .py(px(6.0))
+                .rounded_md()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .hover(|s| s.bg(theme.hover))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.0))
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_size(px(13.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(app.name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.0))
+                                        .text_color(theme.faint)
+                                        .child(processes),
+                                ),
+                        )
+                        .child(right),
+                )
+                // Full row width, so bars compare across rows.
+                .child(
+                    div()
+                        .h(px(3.0))
+                        .w_full()
+                        .rounded_full()
+                        .bg(theme.border)
+                        .child(
+                            div()
+                                .h_full()
+                                .w(gpui::relative(share))
+                                .rounded_full()
+                                .bg(theme.muted),
+                        ),
+                )
+        });
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(
+                div()
+                    .px_3()
+                    .pt_3()
+                    .pb_1()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .id("usage-back")
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .cursor_pointer()
+                            .rounded_md()
+                            .px_2()
+                            .py_1()
+                            .hover(|s| s.bg(theme.hover))
+                            .child(div().text_color(theme.muted).child("‹"))
+                            .child(
+                                div()
+                                    .text_size(px(14.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("What's using it"),
+                            )
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.back(window, cx)
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_1()
+                            .child(tab("usage-cpu", "CPU", Measure::Cpu))
+                            .child(tab("usage-memory", "Memory", Measure::Memory)),
+                    ),
+            )
+            .child(
+                div()
+                    .px_4()
+                    .pb_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_size(px(11.0))
+                    .text_color(theme.muted)
+                    .child(dot(level))
+                    .child(div().min_w_0().truncate().child(summary)),
+            )
+            .when_some(self.snapshot.error.clone(), |view, error| {
+                view.child(
+                    div()
+                        .px_4()
+                        .pb_2()
+                        .text_size(px(12.))
+                        .text_color(theme.danger)
+                        .child(error),
+                )
+            })
+            .child(
+                div()
+                    .id("usage-list")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .pb_2()
+                    .when(empty, |list| {
+                        list.child(
+                            div()
+                                .px_4()
+                                .py_3()
+                                .text_size(px(12.0))
+                                .text_color(theme.faint)
+                                .child(if self.snapshot.apps.is_empty() {
+                                    "Measuring…"
+                                } else {
+                                    "Nothing is using noticeable CPU."
+                                }),
+                        )
+                    })
+                    .children(rows),
+            )
+            .into_any_element()
+    }
+
     fn configuration_button(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("configuration")
@@ -1504,7 +1844,17 @@ impl Popover {
                         },
                     ),
             )
-            .child(resources::indicators(&self.resources, theme, cx))
+            .child({
+                let this = cx.entity().downgrade();
+                resources::indicators(
+                    &self.resources,
+                    theme,
+                    move |measure, window, cx| {
+                        let _ = this.update(cx, |this, cx| this.open_usage(measure, window, cx));
+                    },
+                    cx,
+                )
+            })
     }
 }
 
@@ -1522,6 +1872,7 @@ impl Render for Popover {
                 .into_any_element(),
             Screen::Logs { name, text } => self.logs_view(name, text, theme, cx),
             Screen::Configuration => self.configuration(theme, cx),
+            Screen::Usage(measure) => self.usage(*measure, theme, cx),
         };
 
         div()
@@ -1689,7 +2040,7 @@ fn icon_button(
 }
 
 fn button(
-    id: impl Into<SharedString>,
+    id: impl Into<gpui::ElementId>,
     label: &'static str,
     danger: bool,
     theme: Theme,

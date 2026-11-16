@@ -67,7 +67,6 @@ impl Launcher {
         let Some(process) = child.as_mut() else {
             return;
         };
-        pinch_macos::yield_activation_to(process.id());
         if let Some(input) = process.stdin.as_mut() {
             let command = match anchor {
                 Some(a) => format!("{verb} {},{}", a.x_center, a.y_bottom),

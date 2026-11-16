@@ -21,9 +21,8 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{AnyThread, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSCellImagePosition, NSImage,
-    NSRunningApplication, NSScreen, NSStatusBar, NSStatusBarButton, NSStatusItem,
-    NSVariableStatusItemLength,
+    NSApplication, NSApplicationActivationPolicy, NSCellImagePosition, NSImage, NSScreen,
+    NSStatusBar, NSStatusBarButton, NSStatusItem, NSVariableStatusItemLength,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSBundle, NSData, NSObject, NSObjectProtocol, NSSet, NSSize,
@@ -136,21 +135,6 @@ fn remove_orphaned_notifications() {
     });
     UNUserNotificationCenter::currentNotificationCenter()
         .getDeliveredNotificationsWithCompletionHandler(&done);
-}
-
-/// Let the process `pid` come to the front. Since macOS 14 an app may only
-/// activate when the active app hands activation over, and the user clicked
-/// us, not `pinch-ui`. No-op off the main thread.
-pub fn yield_activation_to(pid: u32) {
-    let Some(mtm) = MainThreadMarker::new() else {
-        return;
-    };
-    let Ok(pid) = libc::pid_t::try_from(pid) else {
-        return;
-    };
-    if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
-        NSApplication::sharedApplication(mtm).yieldActivationToApplication(&app);
-    }
 }
 
 static CALLBACKS: OnceLock<Callbacks> = OnceLock::new();

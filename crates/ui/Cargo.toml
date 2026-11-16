@@ -15,5 +15,7 @@ pinch-client.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 async-channel.workspace = true
+objc2 = "0.6.5"
 objc2-app-kit = "0.3.2"
 objc2-foundation = "0.3.2"
+raw-window-handle = "0.6.2"

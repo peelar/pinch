@@ -78,7 +78,11 @@ python3 scripts/fixture.py --app dist/Pinch.app
 python3 scripts/fixture.py --scenario empty
 python3 scripts/fixture.py --scenario notifications-disabled
 python3 scripts/fixture.py --scenario updates-available
+python3 scripts/fixture.py --scenario busy
 ```
+
+The `busy` scenario shows red CPU and RAM meters under critical memory
+pressure. Click either meter to open the per-app usage view.
 
 For native automation, use a named fixture bundle so tools can select its window
 separately from the running regular app:
@@ -194,7 +198,12 @@ Managed Stop signals the process group, escalating from SIGTERM to SIGKILL after
 five seconds. Quitting Pinch leaves managed processes running.
 
 The engine prewarms a resident UI and forwards menu-bar clicks over stdin. The
-popover reads a cached snapshot and refreshes it while open. The log view strips
+resident UI keeps one popover panel for its lifetime, hidden between clicks
+and refreshing its snapshot every second, so a click shows it without waiting
+for the engine. The panel is non-activating: it takes keyboard focus without
+activating `pinch-ui`. Recreating GPUI windows leaks memory, so do not close it.
+Each sampling pass scans every process outside the registry lock and groups
+them by app bundle (or process name) for the whole-computer usage view. The log view strips
 ANSI sequences and is not virtualized. The engine starts on demand; a launchd
 agent is not implemented. The bundled macOS layer owns Sparkle updates; headless
 engines and source previews do not check for updates.

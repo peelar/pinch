@@ -4,6 +4,7 @@ mod discovery;
 mod engine;
 mod server;
 mod updates;
+mod usage;
 
 pub use updates::UpdateService;
 

@@ -13,7 +13,7 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parent.parent
-SCENARIOS = ("process-list", "empty", "notifications-disabled", "updates-available")
+SCENARIOS = ("process-list", "empty", "notifications-disabled", "updates-available", "busy")
 
 
 class Fixture:
@@ -30,6 +30,11 @@ class Fixture:
             self.process_rules.clear()
         elif scenario == "notifications-disabled":
             self.snapshot["notifications"] = "disabled"
+        elif scenario == "busy":
+            self.snapshot["system"].update(cpu_percent=91, memory_used_bytes=16_500_000_000,
+                                           memory_available_bytes=680_000_000,
+                                           swap_used_bytes=3_200_000_000,
+                                           memory_pressure="critical")
         elif scenario == "updates-available":
             self.snapshot["updates"].update(enabled=True, can_check=True,
                                            automatic_checks=True, available_version="0.3.0")

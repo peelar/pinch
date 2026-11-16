@@ -193,7 +193,8 @@
       "memory_total_bytes": 17179869184,
       "memory_available_bytes": 8589934592,
       "swap_used_bytes": 0,
-      "sampled_at_ms": 1800000000000
+      "sampled_at_ms": 1800000000000,
+      "memory_pressure": "normal"
     },
     "notifications": "enabled",
     "updates": {
@@ -206,6 +207,80 @@
       {
         "path": "/Applications/Raycast.app",
         "recognized_at_ms": 1799996400000
+      }
+    ],
+    "apps": [
+      {
+        "name": "Google Chrome",
+        "app_bundle": "/Applications/Google Chrome.app",
+        "quit_pid": 52001,
+        "process_count": 38,
+        "cpu_percent": 142.0,
+        "memory_bytes": 4939212390
+      },
+      {
+        "name": "Docker Desktop",
+        "app_bundle": "/Applications/Docker Desktop.app",
+        "quit_pid": 52100,
+        "process_count": 9,
+        "cpu_percent": 63.0,
+        "memory_bytes": 3328599654
+      },
+      {
+        "name": "Cursor",
+        "app_bundle": "/Applications/Cursor.app",
+        "quit_pid": 52200,
+        "process_count": 21,
+        "cpu_percent": 18.0,
+        "memory_bytes": 2576980377
+      },
+      {
+        "name": "Slack",
+        "app_bundle": "/Applications/Slack.app",
+        "quit_pid": 52300,
+        "process_count": 6,
+        "cpu_percent": 4.0,
+        "memory_bytes": 1027604480
+      },
+      {
+        "name": "node",
+        "app_bundle": null,
+        "quit_pid": null,
+        "process_count": 7,
+        "cpu_percent": 96.0,
+        "memory_bytes": 1395864371
+      },
+      {
+        "name": "WindowServer",
+        "app_bundle": null,
+        "quit_pid": null,
+        "process_count": 1,
+        "cpu_percent": 12.0,
+        "memory_bytes": 639631360
+      },
+      {
+        "name": "kernel_task",
+        "app_bundle": null,
+        "quit_pid": null,
+        "process_count": 1,
+        "cpu_percent": 9.0,
+        "memory_bytes": 0
+      },
+      {
+        "name": "Spotlight",
+        "app_bundle": null,
+        "quit_pid": null,
+        "process_count": 4,
+        "cpu_percent": 31.0,
+        "memory_bytes": 251658240
+      },
+      {
+        "name": "Pinch",
+        "app_bundle": "/Applications/Pinch.app",
+        "quit_pid": null,
+        "process_count": 2,
+        "cpu_percent": 0.4,
+        "memory_bytes": 50331648
       }
     ]
   },
