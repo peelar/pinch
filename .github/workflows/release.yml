@@ -1,18 +1,77 @@
+# Every push to main releases what its changesets describe (.changeset/README.md). When changesets are pending,
+# the version job runs `pnpm run version`, which bumps package.json and Cargo.toml (one product version) and writes
+# CHANGELOG.md, and commits that to main. When the version then has no GitHub release, the same run builds,
+# packages, and publishes release v<version> with its CHANGELOG.md section as notes. Publishing makes its
+# appcast.xml the latest feed, so installed apps are offered the update. A push without a changeset releases nothing.
 name: Release
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+  workflow_dispatch:
 permissions:
   contents: write
+# One run at a time; each checks out main as it is then, so a queued run sees the previous run's version commit.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.unreleased.outputs.tag }}
+      sha: ${{ steps.unreleased.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+      # sync-version.mjs runs cargo metadata to update Cargo.lock.
+      - name: Install Rust toolchain
+        run: rustup show
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: pnpm/action-setup@v5
+      - run: pnpm install --frozen-lockfile
+      - name: Version pending changesets and commit them to main
+        run: |
+          if ! find .changeset -maxdepth 1 -name '*.md' ! -name README.md | grep -q .; then
+            echo "No pending changesets"
+            exit 0
+          fi
+          pnpm run version
+          pnpm check:version
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Version Pinch v$(node -p 'require("./package.json").version')"
+          # A push that landed meanwhile goes under this commit; its changesets wait for the next run.
+          git pull --rebase origin main
+          git push origin HEAD:main
+      - id: unreleased
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v$(node -p 'require("./package.json").version')"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "$tag is already released"
+          else
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          fi
+
   release:
+    needs: version
+    if: needs.version.outputs.tag != ''
     runs-on: macos-14
     env:
       SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+      TAG: ${{ needs.version.outputs.tag }}
+      SHA: ${{ needs.version.outputs.sha }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.version.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v5
@@ -22,8 +81,8 @@ jobs:
       - uses: pnpm/action-setup@v5
       - run: pnpm install --frozen-lockfile
       - run: pnpm check:version
-      - name: Check release tag
-        run: test "$GITHUB_REF_NAME" = "v$(node -p 'require("./package.json").version')"
+      - name: Check release version
+        run: test "$TAG" = "v$(node -p 'require("./package.json").version')"
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --workspace -- -D warnings
       - run: cargo test --locked --workspace
@@ -57,11 +116,13 @@ jobs:
         run: |
           test -n "$SPARKLE_PRIVATE_KEY"
           scripts/release.sh
-      - name: Create draft release
+      # The notes are this version's CHANGELOG.md section; the tag is created at the commit that was built.
+      - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --verify-tag --draft --generate-notes --title "Pinch $GITHUB_REF_NAME" dist/pinch-macos-arm64.zip dist/pinch-macos-arm64.zip.sha256 dist/install.sh dist/appcast.xml LICENSE
+          awk -v heading="## ${TAG#v}" '$0 == heading { found = 1; next } found && /^## / { exit } found' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --target "$SHA" --title "Pinch $TAG" --notes-file "$RUNNER_TEMP/notes.md" dist/pinch-macos-arm64.zip dist/pinch-macos-arm64.zip.sha256 dist/install.sh dist/appcast.xml LICENSE
       - name: Clean signing credentials
         if: always() && env.SIGNING_IDENTITY != ''
         run: |

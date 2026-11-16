@@ -344,10 +344,10 @@ Add a Changeset for changes users should receive in a release:
 pnpm changeset
 ```
 
-Select `pinch` and an appropriate bump; use patch for fixes. For internal
-refactors, tests, CI, and contributor docs that preserve app behavior, apply the
-`skip changeset` PR label instead. The automated `changeset-release/main` version
-PR is also exempt. See [the release workflow](.changeset/README.md).
+Select `pinch` and an appropriate bump; use patch for fixes. Internal
+refactors, tests, CI, and contributor docs that preserve app behavior need none;
+on a pull request, apply the `skip changeset` label. Pushing a changeset to
+`main` releases it; see [the release workflow](.changeset/README.md).
 
 ## Release packaging
 
@@ -359,7 +359,7 @@ For Developer ID signing and notarization, set `SIGNING_IDENTITY` and
 `NOTARY_PROFILE` (a `notarytool` keychain profile). The script signs the binaries
 and bundle, notarizes, staples the ticket, and packages the result.
 
-Tagged GitHub builds create **draft** Apple Silicon releases. Signing uses these
+Pushes to `main` with changesets publish Apple Silicon releases. Signing uses these
 optional repository secrets:
 
 - `MACOS_CERTIFICATE_BASE64`: base64-encoded Developer ID Application `.p12`.
@@ -368,9 +368,8 @@ optional repository secrets:
 - `APPLE_ID`, `APPLE_APP_PASSWORD`, `APPLE_TEAM_ID`: notarization credentials.
 
 Changesets synchronizes the product version across package.json, Rust crates,
-and app bundles. Use `pnpm run version`, then `pnpm check:version`. Follow the
-[release workflow](.changeset/README.md) for the version PR, matching tag,
-and review of the draft release before publication.
+and app bundles. The [release workflow](.changeset/README.md) runs
+`pnpm run version` and `pnpm check:version` on `main`; do not version locally.
 
 ### In-app update packaging
 
@@ -393,7 +392,7 @@ planned key migration so existing installations can still verify updates.
 Release packaging signs the ZIP and checks the signature against the embedded
 public key. It generates `appcast.xml` with that version's Changesets release
 notes and an immutable, version-specific download URL. The workflow uploads the
-feed to the draft release. The app reads `/releases/latest/download/appcast.xml`,
+feed to the release it publishes. The app reads `/releases/latest/download/appcast.xml`,
 so drafts and prereleases are not offered, and publishing a stable release makes
 its feed available without a separate deployment. Until the first release with
 an appcast is published, manual checks report a feed-download error.

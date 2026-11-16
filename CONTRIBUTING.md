@@ -12,4 +12,4 @@ For setup, previews, required checks, and release tooling, see
 
 Every PR needs a Changeset for `pinch`, including documentation and tooling
 changes. Run `pnpm changeset`, choose the appropriate bump, and commit the
-generated file. Only the automated `changeset-release/main` version PR is exempt.
+generated file.
