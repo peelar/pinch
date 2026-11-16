@@ -1,5 +1,16 @@
 # pinch
 
+## 0.3.0
+
+### Minor Changes
+
+- eb578c5: Click the CPU or RAM meter to see which apps are using your computer, with each app's helper processes added together, and quit an installed app from there. The RAM meter now follows macOS memory pressure instead of turning red whenever memory looks full.
+
+### Patch Changes
+
+- eb578c5: Open and close the popover reliably from the menu bar: it now takes keyboard focus, closes on Escape and when you click elsewhere, and no longer waits for the engine. Pinch also no longer grows by several megabytes each time the popover opens.
+- 468052e: Open the popover reliably from the menu bar icon and from notification clicks.
+
 ## 0.2.4
 
 ### Patch Changes
