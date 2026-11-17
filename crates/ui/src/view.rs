@@ -9,8 +9,7 @@ use gpui::{
 };
 use pinch_client::{now_ms, onboarding, request, request_autostart};
 use pinch_proto::{
-    Decision, DecisionAnswer, Origin, ProcessGroup, ProcessInfo, RecognizedApp, Request, Response,
-    app_name,
+    Decision, DecisionAnswer, Origin, ProcessGroup, ProcessInfo, Request, Response, app_name,
 };
 
 use crate::process_list::ProcessList;
@@ -30,7 +29,6 @@ pub struct Snapshot {
     pub updates: pinch_proto::UpdateStatus,
     pub processes: Vec<ProcessInfo>,
     pub decisions: Vec<Decision>,
-    pub recognized: Vec<RecognizedApp>,
     pub apps: Vec<AppUsage>,
     pub error: Option<String>,
     /// Offer to install the pinch skill into detected agent harnesses.
@@ -96,7 +94,6 @@ fn fetch_engine() -> Snapshot {
             system,
             notifications,
             updates,
-            recognized,
             apps,
         }) => Snapshot {
             loading: false,
@@ -105,7 +102,6 @@ fn fetch_engine() -> Snapshot {
             updates,
             processes,
             decisions,
-            recognized,
             apps,
             error: None,
             onboarding: false,
@@ -151,19 +147,18 @@ fn list_height(snapshot: &Snapshot) -> f32 {
     h.clamp(240.0, 640.0)
 }
 
-/// An app the user marked as expected, with the servers it runs.
-pub struct Expected {
-    path: String,
+/// Ports of the servers an app runs itself.
+pub struct AppServers {
     ports: Vec<u16>,
 }
 
-/// The Apps section: heavy apps, plus each recognized app that runs a server,
-/// so recognized servers appear under the app that owns them.
+/// The Apps section: heavy apps, plus each app that runs a server itself,
+/// so those servers appear under the app instead of in Servers.
 pub fn app_entries(
     snapshot: &Snapshot,
     list: &ProcessList<'_>,
-) -> Vec<(AppUsage, Option<Expected>)> {
-    let mut entries: Vec<(AppUsage, Option<Expected>)> = heavy_apps(&snapshot.apps)
+) -> Vec<(AppUsage, Option<AppServers>)> {
+    let mut entries: Vec<(AppUsage, Option<AppServers>)> = heavy_apps(&snapshot.apps)
         .into_iter()
         .map(|a| (a.clone(), None))
         .collect();
@@ -171,25 +166,26 @@ pub fn app_entries(
         a.app_bundle.as_deref() == Some(path)
             && !matches!(a.instance, Some(pinch_proto::Instance::Automated { .. }))
     };
-    for rule in &snapshot.recognized {
+    let mut paths: Vec<&str> = list
+        .recognized
+        .iter()
+        .filter_map(|(_, p)| p.app.as_deref())
+        .collect();
+    paths.sort_unstable();
+    paths.dedup();
+    for path in paths {
         let servers: Vec<&ProcessInfo> = list
             .recognized
             .iter()
             .map(|(_, p)| *p)
-            .filter(|p| p.recognizable_app() == Some(rule.path.as_str()))
+            .filter(|p| p.app.as_deref() == Some(path))
             .collect();
-        if servers.is_empty() {
-            continue;
-        }
         let mut ports: Vec<u16> = servers.iter().flat_map(|p| p.ports.clone()).collect();
         ports.sort_unstable();
         ports.dedup();
-        let expected = Expected {
-            path: rule.path.clone(),
-            ports,
-        };
-        if let Some(entry) = entries.iter_mut().find(|(a, _)| users(a, &rule.path)) {
-            entry.1 = Some(expected);
+        let runs = AppServers { ports };
+        if let Some(entry) = entries.iter_mut().find(|(a, _)| users(a, path)) {
+            entry.1 = Some(runs);
             continue;
         }
         // Light apps are absent from the heavy list; use the full usage
@@ -197,11 +193,11 @@ pub fn app_entries(
         let app = snapshot
             .apps
             .iter()
-            .find(|a| users(a, &rule.path))
+            .find(|a| users(a, path))
             .cloned()
             .unwrap_or_else(|| AppUsage {
-                name: rule.name().to_string(),
-                app_bundle: Some(rule.path.clone()),
+                name: app_name(path).to_string(),
+                app_bundle: Some(path.to_string()),
                 close: None,
                 instance: None,
                 process_count: servers.len() as u32,
@@ -216,7 +212,7 @@ pub fn app_entries(
                     .map(|m| m.rss_bytes)
                     .sum(),
             });
-        entries.push((app, Some(expected)));
+        entries.push((app, Some(runs)));
     }
     entries
 }
@@ -263,14 +259,7 @@ fn usage_height(snapshot: &Snapshot) -> f32 {
     (52.0 + 48.0 + rows * 50.0 + 40.0 + 12.0).clamp(240.0, 640.0)
 }
 
-fn configuration_height(snapshot: &Snapshot) -> f32 {
-    let recognized = if snapshot.recognized.is_empty() {
-        0.0
-    } else {
-        72.0 + snapshot.recognized.len() as f32 * 40.0
-    };
-    (280.0 + recognized).min(640.0)
-}
+const CONFIGURATION_HEIGHT: f32 = 280.0;
 
 enum Screen {
     List,
@@ -373,7 +362,7 @@ impl Popover {
                 }
             }
             (Screen::Configuration, _) => {
-                window.resize(size(px(WIDTH), px(configuration_height(&self.snapshot))));
+                window.resize(size(px(WIDTH), px(CONFIGURATION_HEIGHT)));
             }
             (Screen::Usage(_), _) => {
                 window.resize(size(px(WIDTH), px(usage_height(&self.snapshot))));
@@ -798,11 +787,10 @@ impl Popover {
         let mut actions = Vec::new();
         if !managed {
             let process = p.clone();
-            let label = match (p.recognized, p.recognizable_app()) {
-                (true, Some(app)) => format!("Unrecognize {}", app_name(app)),
-                (true, None) => "Unrecognize this process".into(),
-                (false, Some(app)) => format!("Recognize {}", app_name(app)),
-                (false, None) => "Recognize until this process exits".into(),
+            let label = if p.recognized {
+                "Unrecognize this process"
+            } else {
+                "Recognize until this process exits"
             };
             let icon = if p.recognized {
                 "icons/undo.svg"
@@ -925,14 +913,14 @@ impl Popover {
                 ),
             );
         let mut out = vec![header.into_any_element()];
-        for (index, (app, expected)) in entries.iter().enumerate() {
+        for (index, (app, runs)) in entries.iter().enumerate() {
             out.push(self.app_row(
                 "apps",
                 index,
                 app,
                 Measure::Memory,
                 None,
-                expected.as_ref(),
+                runs.as_ref(),
                 theme,
                 cx,
             ));
@@ -1271,84 +1259,7 @@ impl Popover {
                         .when(!updates.can_check && updates.available_version.is_none(), |button| button.opacity(0.4)))))
                 .when_some(self.snapshot.error.clone(), |body, error| body.child(
                     div().text_size(px(12.0)).text_color(theme.danger).child(error))))
-            .when(!self.snapshot.recognized.is_empty(), |view| {
-                view.child(self.recognized_apps(theme, cx))
-            })
             .into_any_element()
-    }
-
-    fn recognized_apps(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .id("recognized-apps")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .pb_3()
-            .child(section_label("RECOGNIZED APPS", theme))
-            .child(
-                div()
-                    .px_4()
-                    .pb_1()
-                    .text_size(px(12.0))
-                    .text_color(theme.muted)
-                    .child("Expected apps stay visible in Recognized."),
-            )
-            .children(
-                self.snapshot
-                    .recognized
-                    .iter()
-                    .enumerate()
-                    .map(|(index, app)| {
-                        let path = app.path.clone();
-                        div()
-                            .mx_2()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .hover(|s| s.bg(theme.hover))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .text_size(px(13.0))
-                                            .child(app.name().to_string()),
-                                    )
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .text_size(px(11.0))
-                                            .text_color(theme.faint)
-                                            .child(app.path.clone()),
-                                    ),
-                            )
-                            .child(
-                                icon_button(
-                                    ("forget", index),
-                                    "icons/undo.svg",
-                                    format!("Unrecognize {}", app.name()),
-                                    theme.text,
-                                    theme,
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _: &ClickEvent, window, cx| {
-                                        this.send(
-                                            Request::Forget { app: path.clone() },
-                                            window,
-                                            cx,
-                                        );
-                                    },
-                                )),
-                            )
-                    }),
-            )
     }
 
     /// Whole-computer usage by app: what to look at when the meters are red.
@@ -1526,7 +1437,7 @@ impl Popover {
         app: &AppUsage,
         measure: Measure,
         share: Option<f32>,
-        expected: Option<&Expected>,
+        runs: Option<&AppServers>,
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1547,16 +1458,15 @@ impl Popover {
             1 => "1 process".to_string(),
             n => format!("{n} processes"),
         });
-        if let Some(expected) = expected {
-            let ports: Vec<String> = expected.ports.iter().map(|p| format!(":{p}")).collect();
+        if let Some(runs) = runs {
+            let ports: Vec<String> = runs.ports.iter().map(|p| format!(":{p}")).collect();
             if !ports.is_empty() {
                 subtitle.push(format!("runs {}", ports.join(" ")));
             }
-            subtitle.push("✓ expected".into());
         }
         let dot = if automated {
             Dot::Filled(theme.stale)
-        } else if expected.is_some() && heavy_apps(std::slice::from_ref(app)).is_empty() {
+        } else if runs.is_some() && heavy_apps(std::slice::from_ref(app)).is_empty() {
             Dot::Filled(theme.faint)
         } else {
             Dot::Filled(theme.running)
@@ -1567,22 +1477,6 @@ impl Popover {
         };
 
         let mut actions = Vec::new();
-        if let Some(expected) = expected {
-            let path = expected.path.clone();
-            actions.push(
-                icon_button(
-                    SharedString::from(format!("{key}-forget")),
-                    "icons/undo.svg",
-                    format!("Unrecognize {}", app.name),
-                    theme.text,
-                    theme,
-                )
-                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                    this.send(Request::Forget { app: path.clone() }, window, cx);
-                }))
-                .into_any_element(),
-            );
-        }
         if app.close.is_some() {
             let confirm_key = key.clone();
             let tooltip = if automated {
@@ -1652,7 +1546,7 @@ impl Popover {
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 this.confirm = None;
                 this.screen = Screen::Configuration;
-                window.resize(size(px(WIDTH), px(configuration_height(&this.snapshot))));
+                window.resize(size(px(WIDTH), px(CONFIGURATION_HEIGHT)));
                 cx.notify();
             }))
     }

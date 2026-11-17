@@ -62,8 +62,8 @@ python3 scripts/fixture.py
 Use a bundle built from this checkout so its UI and fixture protocol match.
 The default scene lists Servers (two agent workspaces, one with a stale server,
 and two servers started outside Pinch, one recognized) and Apps (heavy apps,
-an agent's automated Chrome beside the user's own, and recognized Raycast with
-the server it runs). Hover rows, open logs or Configuration, and try recognize,
+an agent's automated Chrome beside the user's own, and Raycast with the server
+it runs). Hover rows, open logs or Configuration, and try recognize,
 undo, Stop, Stop stale, and Close.
 Actions change the sample data; restarting the command resets it.
 
@@ -267,20 +267,24 @@ PID alone; it never signals the group or escalates to SIGKILL.
 
 ### Recognized processes
 
-Every server started outside Pinch can be recognized. A recognized installed app
-moves its servers into **Apps**, on that app's row with its ports and an undo
-action; a server recognized until it exits stays in **Servers** marked expected.
-Recognized processes still count toward the header's running count and RAM total.
+A server started outside Pinch belongs to an installed app, directly inside
+`/Applications` or `~/Applications`, when its executable or its direct parent's
+executable is inside that app. Such servers are expected without asking: they
+appear in **Apps** on that app's row with their ports. Apps that start servers
+themselves, such as Raycast starting `node`, qualify; terminals and editors put
+a shell between themselves and what you run, so your servers stay in **Servers**.
+Processes inside a repository never belong to an app. Runtimes are not apps:
+bundles outside an Applications folder, such as the system `Python.app`, and
+Xcode's developer tools in `Xcode.app/Contents/Developer`, which include
+`/usr/bin/python3`.
 
-For an installed app directly inside `/Applications` or `~/Applications`, the rule
-covers its future processes too. Configuration lists these apps. Processes inside
-a repository get a rule for that running process instead, so recognizing a terminal
-or editor does not cover the projects it runs. Runtime bundles such as the system
-`Python.app` also get a process rule. Process rules match PID and start time;
-a restarted process is unrecognized again. Rules live in `recognized.json`, and
-survive engine updates. Undo recognition from the row, or remove an app rule in
-Configuration. Recognizing never hides processes or changes cleanup decisions;
-only processes started through Pinch can become stale.
+Any other server started outside Pinch can be recognized until it exits. It
+stays in **Servers** marked expected. Rules match PID and start time, so a
+restarted process is unrecognized again; they live in `recognized.json` and
+survive engine updates. Undo recognition from the row. Recognized processes still
+count toward the header's running count and RAM total. Recognizing never hides
+processes or changes cleanup decisions; only processes started through Pinch can
+become stale.
 
 ### Cleanup suggestions
 

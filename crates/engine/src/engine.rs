@@ -19,7 +19,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use pinch_client::{home, logs_dir, now_ms};
 use pinch_proto::{
     AppUsage, Close, Decision, DecisionAnswer, Metrics, Origin, ProcessId, ProcessInfo,
-    ProcessKind, RecognizedApp, Spawn, Status, SystemMetrics,
+    ProcessKind, Spawn, Status, SystemMetrics,
 };
 use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -78,7 +78,6 @@ struct Inner {
     entries: Vec<Entry>,
     decisions: Vec<Decision>,
     unmanaged: Vec<ProcessInfo>,
-    recognized: Vec<RecognizedApp>,
     recognized_processes: Vec<ProcessId>,
     recognized_path: PathBuf,
     system_metrics: SystemMetrics,
@@ -176,7 +175,7 @@ impl Engine {
             .collect();
 
         let recognized_path = home().join("recognized.json");
-        let (recognized, recognized_processes) = load_recognized(&recognized_path);
+        let recognized_processes = load_recognized(&recognized_path);
         let mut sampler = Sampler {
             sys,
             cpu_totals: HashMap::new(),
@@ -188,7 +187,6 @@ impl Engine {
             last_decisions: decisions.iter().map(|d| d.id.clone()).collect(),
             decisions,
             unmanaged: Vec::new(),
-            recognized,
             recognized_processes,
             recognized_path,
             system_metrics: refresh_system_metrics(&mut sampler),
@@ -267,22 +265,19 @@ impl Engine {
         Vec<ProcessInfo>,
         Vec<Decision>,
         SystemMetrics,
-        Vec<RecognizedApp>,
         Vec<AppUsage>,
     ) {
         let inner = self.lock();
         let mut processes: Vec<ProcessInfo> =
             inner.entries.iter().map(|e| e.info.clone()).collect();
         processes.extend(inner.unmanaged.iter().cloned().map(|mut p| {
-            p.recognized =
-                is_recognized(&inner.recognized, &p) || inner.recognized_processes.contains(&p.id);
+            p.recognized = p.app.is_some() || inner.recognized_processes.contains(&p.id);
             p
         }));
         (
             processes,
             inner.decisions.clone(),
             inner.system_metrics,
-            inner.recognized.clone(),
             inner.apps.clone(),
         )
     }
@@ -294,37 +289,12 @@ impl Engine {
             .iter()
             .find(|p| p.id == reviewed.id)
             .ok_or_else(|| anyhow!("discovered process is no longer available; review it again"))?;
-        let mut apps = inner.recognized.clone();
         let mut processes = inner.recognized_processes.clone();
-        if let Some(path) = info.recognizable_app() {
-            if !apps.iter().any(|app| app.path == path) {
-                apps.push(RecognizedApp {
-                    path: path.to_string(),
-                    recognized_at_ms: now_ms(),
-                });
-            }
-        } else if !processes.contains(&info.id) {
+        if !processes.contains(&info.id) {
             processes.push(info.id.clone());
         }
-        save_recognized(&inner.recognized_path, &apps, &processes)?;
-        inner.recognized = apps;
+        save_recognized(&inner.recognized_path, &processes)?;
         inner.recognized_processes = processes;
-        Ok(())
-    }
-
-    pub fn forget(&self, path: &str) -> Result<()> {
-        let mut inner = self.lock();
-        let apps: Vec<_> = inner
-            .recognized
-            .iter()
-            .filter(|app| app.path != path)
-            .cloned()
-            .collect();
-        if apps.len() == inner.recognized.len() {
-            bail!("'{path}' is not a recognized app");
-        }
-        save_recognized(&inner.recognized_path, &apps, &inner.recognized_processes)?;
-        inner.recognized = apps;
         Ok(())
     }
 
@@ -335,21 +305,13 @@ impl Engine {
             .iter()
             .find(|p| p.id == reviewed.id)
             .ok_or_else(|| anyhow!("discovered process is no longer available; review it again"))?;
-        let app = info.recognizable_app();
-        let apps: Vec<_> = inner
-            .recognized
-            .iter()
-            .filter(|a| Some(a.path.as_str()) != app)
-            .cloned()
-            .collect();
         let processes: Vec<_> = inner
             .recognized_processes
             .iter()
             .filter(|id| **id != info.id)
             .cloned()
             .collect();
-        save_recognized(&inner.recognized_path, &apps, &processes)?;
-        inner.recognized = apps;
+        save_recognized(&inner.recognized_path, &processes)?;
         inner.recognized_processes = processes;
         Ok(())
     }
@@ -621,6 +583,7 @@ impl Engine {
                 .map(|p| p.to_string_lossy().into_owned()),
             app_bundle: None,
             launcher_app: None,
+            app: None,
             repo: repo.map(|r| r.to_string_lossy().into_owned()),
             branch,
             owner: spawn.owner.clone(),
@@ -878,11 +841,22 @@ impl Engine {
                 .collect();
             let app_bundle = executable
                 .as_deref()
-                .and_then(app_bundle_path)
-                .or_else(|| command.iter().find_map(|arg| app_bundle_path(arg)));
+                .and_then(program_app)
+                .or_else(|| command.iter().find_map(|arg| program_app(arg)));
             let launcher_app = ancestor_app(sys, Pid::from_u32(pid));
-            let label = app_bundle
+            let parent_executable = proc_
+                .parent()
+                .and_then(|parent| sys.process(parent))
+                .and_then(|parent| parent.exe())
+                .map(|exe| exe.to_string_lossy().into_owned());
+            let app = owning_app(
+                executable.as_deref(),
+                parent_executable.as_deref(),
+                repo.is_some(),
+            );
+            let label = app
                 .as_deref()
+                .or(app_bundle.as_deref())
                 .and_then(|path| Path::new(path).file_stem())
                 .map(|name| name.to_string_lossy().into_owned())
                 .or_else(|| {
@@ -904,6 +878,7 @@ impl Engine {
                 executable,
                 app_bundle,
                 launcher_app,
+                app,
                 repo: repo.map(|r| r.to_string_lossy().into_owned()),
                 branch,
                 owner: None,
@@ -982,42 +957,28 @@ fn save(inner: &Inner) {
     }
 }
 
+/// Processes marked as expected until they exit, in `recognized.json`.
 #[derive(Serialize, Deserialize)]
-#[serde(untagged)]
-enum RecognizedRules {
-    Legacy(Vec<RecognizedApp>),
-    Current {
-        apps: Vec<RecognizedApp>,
-        processes: Vec<ProcessId>,
-    },
+struct RecognizedRules {
+    #[serde(default)]
+    processes: Vec<ProcessId>,
 }
 
-fn load_recognized(path: &Path) -> (Vec<RecognizedApp>, Vec<ProcessId>) {
-    match fs::read(path)
+fn load_recognized(path: &Path) -> Vec<ProcessId> {
+    fs::read(path)
         .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-    {
-        Some(RecognizedRules::Legacy(apps)) => (apps, vec![]),
-        Some(RecognizedRules::Current { apps, processes }) => (apps, processes),
-        None => (vec![], vec![]),
-    }
+        .and_then(|bytes| serde_json::from_slice::<RecognizedRules>(&bytes).ok())
+        .map_or_else(Vec::new, |rules| rules.processes)
 }
 
-fn save_recognized(path: &Path, apps: &[RecognizedApp], processes: &[ProcessId]) -> Result<()> {
+fn save_recognized(path: &Path, processes: &[ProcessId]) -> Result<()> {
     let tmp = path.with_extension("json.tmp");
-    let rules = RecognizedRules::Current {
-        apps: apps.to_vec(),
+    let rules = RecognizedRules {
         processes: processes.to_vec(),
     };
     fs::write(&tmp, serde_json::to_vec_pretty(&rules)?)
         .and_then(|()| fs::rename(&tmp, path))
         .with_context(|| format!("could not save recognition rules to {}", path.display()))
-}
-
-fn is_recognized(recognized: &[RecognizedApp], process: &ProcessInfo) -> bool {
-    process
-        .recognizable_app()
-        .is_some_and(|path| recognized.iter().any(|app| app.path == path))
 }
 
 fn sync_attention(hooks: &Hooks, inner: &mut Inner) {
@@ -1233,7 +1194,7 @@ fn ancestor_app(sys: &System, pid: Pid) -> Option<String> {
         let process = sys.process(current)?;
         if let Some(bundle) = process
             .exe()
-            .and_then(|p| app_bundle_path(&p.to_string_lossy()))
+            .and_then(|p| program_app(&p.to_string_lossy()))
         {
             return Some(bundle);
         }
@@ -1244,6 +1205,32 @@ fn ancestor_app(sys: &System, pid: Pid) -> Option<String> {
         current = parent;
     }
     None
+}
+
+/// The installed app that runs a discovered server itself: the server's
+/// executable or its direct parent's is inside the app. A terminal or editor
+/// puts a shell between itself and what you run, and a process inside a
+/// repository is someone's project. Runtimes are no app: bundles outside an
+/// Applications folder, like the `Python.app` inside `Python3.framework`, and
+/// Xcode's developer tools (see [`program_app`]).
+fn owning_app(executable: Option<&str>, parent: Option<&str>, in_repo: bool) -> Option<String> {
+    if in_repo {
+        return None;
+    }
+    [executable, parent]
+        .into_iter()
+        .flatten()
+        .filter_map(program_app)
+        .find(|bundle| pinch_proto::is_installed_app(bundle))
+}
+
+/// The app a program path belongs to. Xcode's developer tools, which include
+/// `/usr/bin/python3`, belong to no app: a server they run is not Xcode's.
+fn program_app(path: &str) -> Option<String> {
+    if path.contains(".app/Contents/Developer/") {
+        return None;
+    }
+    app_bundle_path(path)
 }
 
 pub(crate) fn app_bundle_path(path: &str) -> Option<String> {
@@ -1276,7 +1263,6 @@ mod identity_tests {
                 entries: vec![],
                 decisions: vec![],
                 unmanaged: vec![info],
-                recognized: vec![],
                 recognized_processes: vec![],
                 recognized_path: PathBuf::new(),
                 system_metrics: SystemMetrics::default(),
@@ -1376,7 +1362,6 @@ mod identity_tests {
                 entries: vec![],
                 decisions: vec![],
                 unmanaged,
-                recognized: vec![],
                 recognized_processes: vec![],
                 recognized_path,
                 system_metrics: SystemMetrics::default(),
@@ -1399,52 +1384,86 @@ mod identity_tests {
     }
 
     #[test]
-    fn recognition_keeps_processes_visible_and_scopes_app_and_process_rules() {
+    fn recognition_lasts_until_the_process_exits() {
         let dir = std::env::temp_dir().join(format!("pinch-recognized-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("recognized.json");
-        let raycast = "/Applications/Raycast.app";
-        let backend = discovered(7265, "/rc/node-v22/bin/node", raycast, None);
-        let project = discovered(3000, "/opt/homebrew/bin/node", raycast, Some("/repos/web"));
-        let engine = engine_with(vec![backend.clone(), project.clone()], path.clone());
+        let ghostty = "/Applications/Ghostty.app";
+        let scratch = discovered(7265, "/opt/homebrew/bin/node", ghostty, None);
+        let project = discovered(3000, "/opt/homebrew/bin/node", ghostty, Some("/repos/web"));
+        let engine = engine_with(vec![scratch.clone(), project.clone()], path.clone());
         engine.recognize(&project).unwrap();
-        engine.recognize(&backend).unwrap();
-        engine.recognize(&backend).unwrap();
-        assert_eq!(engine.snapshot().0.len(), 2);
-        assert!(engine.snapshot().0.iter().all(|p| p.recognized));
-        let (apps, processes) = load_recognized(&path);
-        assert_eq!(apps.len(), 1);
-        assert_eq!(apps[0].path, raycast);
-        assert_eq!(processes, [project.id.clone()]);
-        let restarted_app = discovered(8123, "/rc/node-v24/bin/node", raycast, None);
-        let mut restarted_project = project.clone();
-        restarted_project.id = ProcessId("pid:3000:2".into());
-        let restored = engine_with(vec![restarted_app, restarted_project], path.clone());
-        restored.lock().recognized = apps;
-        restored.lock().recognized_processes = processes;
-        let snapshot = restored.snapshot().0;
-        assert!(snapshot[0].recognized);
-        assert!(!snapshot[1].recognized);
+        engine.recognize(&project).unwrap();
+        let snapshot = engine.snapshot().0;
+        assert!(snapshot[1].recognized);
+        assert!(
+            !snapshot[0].recognized,
+            "rules cover one process, not its launcher"
+        );
+        assert_eq!(load_recognized(&path), vec![project.id.clone()]);
+        let mut restarted = project.clone();
+        restarted.id = ProcessId("pid:3000:2".into());
+        let restored = engine_with(vec![scratch.clone(), restarted], path.clone());
+        restored.lock().recognized_processes = load_recognized(&path);
+        assert!(!restored.snapshot().0[1].recognized);
         engine.unrecognize(&project).unwrap();
         assert!(!engine.snapshot().0[1].recognized);
-        engine.unrecognize(&backend).unwrap();
-        assert!(!engine.snapshot().0[0].recognized);
-        assert!(engine.snapshot().3.is_empty());
-        assert_eq!(load_recognized(&path), (vec![], vec![]));
-        let missing = discovered(9999, "/node", raycast, None);
+        assert!(load_recognized(&path).is_empty());
+        let missing = discovered(9999, "/node", ghostty, None);
         assert!(engine.recognize(&missing).is_err());
         assert!(engine.unrecognize(&missing).is_err());
+        // App rules from earlier versions are dropped; process rules remain.
         fs::write(
             &path,
-            serde_json::to_vec(&vec![RecognizedApp {
-                path: raycast.into(),
-                recognized_at_ms: 1,
-            }])
-            .unwrap(),
+            r#"{"apps":[{"path":"/Applications/Raycast.app","recognized_at_ms":1}],"processes":["pid:3000:1"]}"#,
         )
         .unwrap();
-        assert_eq!(load_recognized(&path).0[0].path, raycast);
+        assert_eq!(load_recognized(&path), vec![project.id.clone()]);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn servers_belong_to_the_installed_app_that_runs_them() {
+        let raycast = "/Applications/Raycast.app/Contents/MacOS/Raycast";
+        let node = "/opt/homebrew/bin/node";
+        // Raycast starts node itself; a terminal puts a shell in between.
+        assert_eq!(
+            owning_app(Some(node), Some(raycast), false).as_deref(),
+            Some("/Applications/Raycast.app")
+        );
+        assert_eq!(owning_app(Some(node), Some("/bin/zsh"), false), None);
+        assert_eq!(owning_app(Some(node), Some(raycast), true), None);
+        let helper = format!(
+            "{}/Applications/Pinch.app/Contents/Frameworks/Helper.app/Contents/MacOS/Helper",
+            std::env::var("HOME").unwrap()
+        );
+        let pinch = format!("{}/Applications/Pinch.app", std::env::var("HOME").unwrap());
+        assert_eq!(owning_app(Some(&helper), Some(raycast), false), Some(pinch));
+        assert_eq!(
+            owning_app(
+                Some("/tmp/Applications/Other.app/Contents/MacOS/Other"),
+                None,
+                false
+            ),
+            None
+        );
+        let python = "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python";
+        assert_eq!(owning_app(Some(python), Some("/bin/zsh"), false), None);
+        let xcode_python = "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python";
+        assert_eq!(
+            owning_app(Some(xcode_python), Some("/bin/zsh"), false),
+            None
+        );
+        assert_eq!(owning_app(Some(node), Some(xcode_python), false), None);
+        assert_eq!(
+            owning_app(
+                Some("/Applications/Xcode.app/Contents/MacOS/Xcode"),
+                None,
+                false
+            )
+            .as_deref(),
+            Some("/Applications/Xcode.app")
+        );
     }
 
     #[test]
@@ -1461,5 +1480,9 @@ mod identity_tests {
         );
         assert_eq!(app_bundle_path("/opt/homebrew/bin/node"), None);
         assert_eq!(app_bundle_path("--app=/Applications/Raycast.app"), None);
+        assert_eq!(
+            program_app("/Applications/Xcode.app/Contents/Developer/usr/bin/python3"),
+            None
+        );
     }
 }

@@ -93,14 +93,13 @@ fn dispatch(
                 process: engine.run(spawn)?,
             },
             Request::Snapshot => {
-                let (processes, decisions, system, recognized, apps) = engine.snapshot();
+                let (processes, decisions, system, apps) = engine.snapshot();
                 Response::Snapshot {
                     processes,
                     decisions,
                     system,
                     notifications: notifications(),
                     updates: (updates.status)(),
-                    recognized,
                     apps,
                 }
             }
@@ -128,10 +127,6 @@ fn dispatch(
             }
             Request::Unrecognize { process } => {
                 engine.unrecognize(&process)?;
-                Response::Ok
-            }
-            Request::Forget { app } => {
-                engine.forget(&app)?;
                 Response::Ok
             }
             Request::Clear { name } => {

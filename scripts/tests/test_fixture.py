@@ -31,9 +31,8 @@ class FixtureTests(unittest.TestCase):
         self.assertTrue(self.data.current()["processes"][2]["recognized"])
         self.data.dispatch({"type": "unrecognize", "process": process})
         self.assertFalse(self.data.current()["processes"][2]["recognized"])
-        self.data.dispatch({"type": "forget", "app": "/Applications/Raycast.app"})
-        self.assertFalse(self.data.current()["processes"][3]["recognized"])
-        self.assertEqual(self.data.current()["recognized"], [])
+        self.data.dispatch({"type": "unrecognize", "process": self.data.current()["processes"][3]})
+        self.assertTrue(self.data.current()["processes"][3]["recognized"])
 
     def test_stop_and_stale_answers_only_mutate_fixture_records(self):
         decision = self.data.current()["decisions"][0]

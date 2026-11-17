@@ -70,7 +70,7 @@ impl<'a> ProcessList<'a> {
     }
 
     /// Servers started outside Pinch that belong in the server list: unknown
-    /// ones, and ones recognized until they exit. Servers of a recognized app
+    /// ones, and ones recognized until they exit. Servers an app runs itself
     /// are listed under that app instead.
     pub fn discovered(&self) -> Vec<&'a ProcessInfo> {
         self.unmanaged
@@ -80,7 +80,7 @@ impl<'a> ProcessList<'a> {
                 self.recognized
                     .iter()
                     .map(|(_, p)| *p)
-                    .filter(|p| p.recognizable_app().is_none()),
+                    .filter(|p| p.app.is_none()),
             )
             .collect()
     }
@@ -113,6 +113,7 @@ mod tests {
             executable: None,
             app_bundle: None,
             launcher_app: None,
+            app: None,
             repo: None,
             branch: None,
             owner: None,

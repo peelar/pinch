@@ -20,6 +20,7 @@
         "executable": "/opt/homebrew/bin/pnpm",
         "app_bundle": null,
         "launcher_app": null,
+        "app": null,
         "repo": "/workspaces/website",
         "branch": "main",
         "owner": null,
@@ -57,6 +58,7 @@
         "executable": "/opt/homebrew/bin/pnpm",
         "app_bundle": null,
         "launcher_app": null,
+        "app": null,
         "repo": "/workspaces/storefront",
         "branch": "main",
         "owner": null,
@@ -94,6 +96,7 @@
         "executable": "/usr/bin/python3",
         "app_bundle": null,
         "launcher_app": null,
+        "app": null,
         "repo": "/workspaces/api",
         "branch": "main",
         "owner": null,
@@ -127,6 +130,7 @@
         "executable": "/opt/homebrew/bin/node",
         "app_bundle": null,
         "launcher_app": "/Applications/Raycast.app",
+        "app": "/Applications/Raycast.app",
         "repo": null,
         "branch": null,
         "owner": null,
@@ -160,6 +164,7 @@
         "executable": "/opt/homebrew/bin/node",
         "app_bundle": null,
         "launcher_app": null,
+        "app": null,
         "repo": "/workspaces/preview",
         "branch": "main",
         "owner": null,
@@ -203,12 +208,6 @@
       "automatic_checks": false,
       "available_version": null
     },
-    "recognized": [
-      {
-        "path": "/Applications/Raycast.app",
-        "recognized_at_ms": 1799996400000
-      }
-    ],
     "apps": [
       {
         "name": "Google Chrome",
@@ -327,5 +326,5 @@
     "docs": "> docs@1.0.0 dev\n> vite --port 3001\n\n  VITE ready in 180 ms\n  ➜  Local: http://localhost:3001/\n",
     "web": "> storefront@1.0.0 dev\n> vite\n\n  VITE ready in 240 ms\n  ➜  Local: http://localhost:3000/\n"
   },
-  "protocol_version": 8
+  "protocol_version": 9
 }
