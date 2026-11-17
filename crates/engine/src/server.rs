@@ -118,6 +118,10 @@ fn dispatch(
             Request::StopDiscovered { process } => Response::Process {
                 process: engine.stop_discovered(&process)?,
             },
+            Request::TerminateApp { pid, started_at_s } => {
+                engine.terminate_app(pid, started_at_s)?;
+                Response::Ok
+            }
             Request::Recognize { process } => {
                 engine.recognize(&process)?;
                 Response::Ok

@@ -213,80 +213,119 @@
       {
         "name": "Google Chrome",
         "app_bundle": "/Applications/Google Chrome.app",
-        "quit_pid": 52001,
-        "process_count": 38,
-        "cpu_percent": 142.0,
-        "memory_bytes": 4939212390
+        "process_count": 24,
+        "cpu_percent": 38.0,
+        "memory_bytes": 3100000000,
+        "close": {
+          "type": "quit",
+          "pid": 52001
+        },
+        "instance": {
+          "type": "yours"
+        }
+      },
+      {
+        "name": "Google Chrome",
+        "app_bundle": "/Applications/Google Chrome.app",
+        "close": {
+          "type": "terminate",
+          "pid": 61200,
+          "started_at_s": 1763290000
+        },
+        "instance": {
+          "type": "automated",
+          "launched_by": "Claude Code"
+        },
+        "process_count": 14,
+        "cpu_percent": 104.0,
+        "memory_bytes": 1840000000
       },
       {
         "name": "Docker Desktop",
         "app_bundle": "/Applications/Docker Desktop.app",
-        "quit_pid": 52100,
         "process_count": 9,
         "cpu_percent": 63.0,
-        "memory_bytes": 3328599654
+        "memory_bytes": 3328599654,
+        "close": {
+          "type": "quit",
+          "pid": 52100
+        },
+        "instance": null
       },
       {
         "name": "Cursor",
         "app_bundle": "/Applications/Cursor.app",
-        "quit_pid": 52200,
         "process_count": 21,
         "cpu_percent": 18.0,
-        "memory_bytes": 2576980377
+        "memory_bytes": 2576980377,
+        "close": {
+          "type": "quit",
+          "pid": 52200
+        },
+        "instance": null
       },
       {
         "name": "Slack",
         "app_bundle": "/Applications/Slack.app",
-        "quit_pid": 52300,
         "process_count": 6,
         "cpu_percent": 4.0,
-        "memory_bytes": 1027604480
+        "memory_bytes": 1027604480,
+        "close": {
+          "type": "quit",
+          "pid": 52300
+        },
+        "instance": null
       },
       {
         "name": "node",
         "app_bundle": null,
-        "quit_pid": null,
         "process_count": 7,
         "cpu_percent": 96.0,
-        "memory_bytes": 1395864371
+        "memory_bytes": 1395864371,
+        "close": null,
+        "instance": null
       },
       {
         "name": "WindowServer",
         "app_bundle": null,
-        "quit_pid": null,
         "process_count": 1,
         "cpu_percent": 12.0,
-        "memory_bytes": 639631360
+        "memory_bytes": 639631360,
+        "close": null,
+        "instance": null
       },
       {
         "name": "kernel_task",
         "app_bundle": null,
-        "quit_pid": null,
         "process_count": 1,
         "cpu_percent": 9.0,
-        "memory_bytes": 0
+        "memory_bytes": 0,
+        "close": null,
+        "instance": null
       },
       {
         "name": "Spotlight",
         "app_bundle": null,
-        "quit_pid": null,
         "process_count": 4,
         "cpu_percent": 31.0,
-        "memory_bytes": 251658240
+        "memory_bytes": 251658240,
+        "close": null,
+        "instance": null
       },
       {
         "name": "Pinch",
         "app_bundle": "/Applications/Pinch.app",
-        "quit_pid": null,
         "process_count": 2,
         "cpu_percent": 0.4,
-        "memory_bytes": 50331648
+        "memory_bytes": 50331648,
+        "close": null,
+        "instance": null
       }
     ]
   },
   "logs": {
-    "docs": "> docs@1.0.0 dev\n> vite --port 3001\n\n  VITE ready in 180 ms\n  \u279c  Local: http://localhost:3001/\n",
-    "web": "> storefront@1.0.0 dev\n> vite\n\n  VITE ready in 240 ms\n  \u279c  Local: http://localhost:3000/\n"
+    "docs": "> docs@1.0.0 dev\n> vite --port 3001\n\n  VITE ready in 180 ms\n  ➜  Local: http://localhost:3001/\n",
+    "web": "> storefront@1.0.0 dev\n> vite\n\n  VITE ready in 240 ms\n  ➜  Local: http://localhost:3000/\n"
   },
-  "protocol_version": 7
+  "protocol_version": 8
 }

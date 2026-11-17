@@ -17,7 +17,6 @@ pub struct Theme {
     pub border: Rgba,
     pub running: Rgba,
     pub stale: Rgba,
-    pub stopped: Rgba,
     pub danger: Rgba,
     pub on_danger: Rgba,
 }
@@ -38,7 +37,6 @@ impl Theme {
                 border: rgb(0x3d4440),
                 running: rgb(0xd7ff3f),
                 stale: rgb(0xffb000),
-                stopped: rgb(0x8b9290),
                 danger: rgb(0xff5269),
                 on_danger: rgb(0x10120d),
             },
@@ -55,7 +53,6 @@ impl Theme {
                 border: rgb(0xb9c1bc),
                 running: rgb(0x287900),
                 stale: rgb(0x925300),
-                stopped: rgb(0x69736c),
                 danger: rgb(0xc11538),
                 on_danger: rgb(0xffffff),
             },

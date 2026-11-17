@@ -131,6 +131,12 @@ class Fixture:
                 self.snapshot["decisions"] = [d for d in self.snapshot["decisions"]
                                               if d["process"] != process["id"]]
                 return {"type": "process", "process": deepcopy(process)}
+        elif kind == "terminate_app":
+            apps = self.snapshot["apps"]
+            match = [a for a in apps if (a.get("close") or {}).get("pid") == request["pid"]]
+            if not match:
+                return {"type": "error", "message": "Fixture app is no longer listed."}
+            apps.remove(match[0])
         elif kind == "set_automatic_update_checks":
             self.snapshot["updates"]["automatic_checks"] = request["enabled"]
         elif kind not in ("shutdown", "check_for_updates"):

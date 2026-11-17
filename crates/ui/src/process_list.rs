@@ -1,4 +1,6 @@
-use pinch_proto::{Decision, Origin, ProcessInfo};
+use std::collections::BTreeMap;
+
+use pinch_proto::{Decision, Origin, ProcessGroup, ProcessInfo};
 
 pub struct ProcessList<'a> {
     pub stale: Vec<(&'a ProcessInfo, &'a Decision)>,
@@ -51,6 +53,36 @@ impl<'a> ProcessList<'a> {
         list.unmanaged.sort_by(by_resources);
         list.recognized.sort_by(by_resources);
         list
+    }
+
+    /// Servers Pinch started, stale ones first, by agent session.
+    pub fn managed_groups(
+        &self,
+    ) -> BTreeMap<ProcessGroup, Vec<(&'a ProcessInfo, Option<&'a Decision>)>> {
+        let mut groups = BTreeMap::<_, Vec<_>>::new();
+        for &(p, d) in &self.stale {
+            groups.entry(p.group()).or_default().push((p, Some(d)));
+        }
+        for &(_, p) in &self.managed {
+            groups.entry(p.group()).or_default().push((p, None));
+        }
+        groups
+    }
+
+    /// Servers started outside Pinch that belong in the server list: unknown
+    /// ones, and ones recognized until they exit. Servers of a recognized app
+    /// are listed under that app instead.
+    pub fn discovered(&self) -> Vec<&'a ProcessInfo> {
+        self.unmanaged
+            .iter()
+            .map(|(_, p)| *p)
+            .chain(
+                self.recognized
+                    .iter()
+                    .map(|(_, p)| *p)
+                    .filter(|p| p.recognizable_app().is_none()),
+            )
+            .collect()
     }
 
     pub fn stale_ram(&self) -> u64 {
@@ -195,5 +227,41 @@ mod tests {
         snapshot.processes.remove(0);
         snapshot.decisions.clear();
         assert_eq!(height_for(&snapshot), with_history);
+    }
+
+    #[test]
+    fn heavy_apps_keep_agent_browsers_and_big_apps_with_instances_together() {
+        use crate::view::heavy_apps;
+        use pinch_proto::{AppUsage, Instance};
+        let app = |name: &str, gib: f32, cpu: f32, instance: Option<Instance>| AppUsage {
+            name: name.into(),
+            app_bundle: Some(format!("/Applications/{name}.app")),
+            close: None,
+            instance,
+            process_count: 1,
+            cpu_percent: cpu,
+            memory_bytes: (gib * (1u64 << 30) as f32) as u64,
+        };
+        let agent = Instance::Automated { launched_by: None };
+        let apps = vec![
+            app("Slack", 0.5, 1.0, None),
+            app("Chrome", 0.2, 0.0, Some(agent.clone())),
+            app("Docker", 2.0, 0.0, None),
+            app("Chrome", 3.0, 0.0, Some(Instance::Yours)),
+            app("Xcode", 0.3, 80.0, None),
+        ];
+        let heavy: Vec<(&str, u64)> = heavy_apps(&apps)
+            .iter()
+            .map(|a| (a.name.as_str(), a.memory_bytes >> 20))
+            .collect();
+        assert_eq!(
+            heavy,
+            [
+                ("Chrome", 3072),
+                ("Chrome", 204),
+                ("Docker", 2048),
+                ("Xcode", 307)
+            ]
+        );
     }
 }

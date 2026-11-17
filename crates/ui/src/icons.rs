@@ -6,6 +6,12 @@ pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        if let Some(bundle) = path
+            .strip_prefix(APP_ICON_PREFIX)
+            .and_then(|p| p.strip_suffix(".png"))
+        {
+            return Ok(app_icon_png(bundle, 64).map(Cow::Owned));
+        }
         let bytes: Option<&'static [u8]> = match path {
             "icons/settings.svg" => Some(include_bytes!("../assets/icons/settings.svg")),
             "icons/x.svg" => Some(include_bytes!("../assets/icons/x.svg")),
@@ -47,6 +53,71 @@ impl AssetSource for Assets {
     fn list(&self, _: &str) -> gpui::Result<Vec<SharedString>> {
         Ok(Vec::new())
     }
+}
+
+const APP_ICON_PREFIX: &str = "app-icons";
+
+/// The icon Finder shows for an app bundle, falling back to the runtime
+/// icon for process groups without one.
+pub fn app(bundle: Option<&str>, name: &str) -> AnyElement {
+    match bundle {
+        Some(bundle) => img(SharedString::from(format!("{APP_ICON_PREFIX}{bundle}.png")))
+            .w(px(20.))
+            .h(px(20.))
+            .flex_none()
+            .into_any_element(),
+        None => runtime(&ProcessKind::from_exe(name)),
+    }
+}
+
+/// Render the bundle's Finder icon into a square PNG. AppKit allows this off
+/// the main thread: the bitmap context is current only on this thread.
+fn app_icon_png(bundle: &str, size: isize) -> Option<Vec<u8>> {
+    use objc2::AllocAnyThread;
+    use objc2_app_kit::{
+        NSBitmapImageFileType, NSBitmapImageRep, NSCompositingOperation, NSDeviceRGBColorSpace,
+        NSGraphicsContext, NSWorkspace,
+    };
+    use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize, NSString};
+
+    // Finder's icon for a missing path is a blank document.
+    if !std::path::Path::new(bundle).exists() {
+        return None;
+    }
+    let image = NSWorkspace::sharedWorkspace().iconForFile(&NSString::from_str(bundle));
+    // SAFETY: a null plane pointer asks AppKit to allocate the pixel buffer.
+    let rep = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            size,
+            size,
+            8,
+            4,
+            true,
+            false,
+            NSDeviceRGBColorSpace,
+            0,
+            0,
+        )
+    }?;
+    let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
+    NSGraphicsContext::saveGraphicsState_class();
+    NSGraphicsContext::setCurrentContext(Some(&context));
+    let side = size as f64;
+    image.drawInRect_fromRect_operation_fraction(
+        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(side, side)),
+        NSRect::ZERO,
+        NSCompositingOperation::SourceOver,
+        1.0,
+    );
+    context.flushGraphics();
+    NSGraphicsContext::restoreGraphicsState_class();
+    // SAFETY: an empty dictionary is valid PNG properties.
+    let png = unsafe {
+        rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new())
+    }?;
+    Some(png.to_vec())
 }
 
 pub fn runtime(kind: &ProcessKind) -> AnyElement {

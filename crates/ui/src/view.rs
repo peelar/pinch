@@ -10,13 +10,13 @@ use gpui::{
 use pinch_client::{now_ms, onboarding, request, request_autostart};
 use pinch_proto::{
     Decision, DecisionAnswer, Origin, ProcessGroup, ProcessInfo, RecognizedApp, Request, Response,
-    Status, app_name,
+    app_name,
 };
 
 use crate::process_list::ProcessList;
 use crate::resources::{self, Measure};
 use crate::theme::Theme;
-use pinch_proto::{AppUsage, NotificationStatus, SystemMetrics};
+use pinch_proto::{AppUsage, Close, NotificationStatus, SystemMetrics};
 
 pub const WIDTH: f32 = 400.0;
 const LOG_HEIGHT: f32 = 520.0;
@@ -124,13 +124,11 @@ fn fetch_engine() -> Snapshot {
 
 /// Window height that fits the content, within sane bounds.
 pub fn height_for(snapshot: &Snapshot) -> f32 {
-    list_height(snapshot, false)
+    list_height(snapshot)
 }
 
-fn list_height(snapshot: &Snapshot, recognized_open: bool) -> f32 {
+fn list_height(snapshot: &Snapshot) -> f32 {
     let list = ProcessList::new(&snapshot.processes, &snapshot.decisions);
-    let managed = list.managed.len() as f32;
-    let unmanaged = list.unmanaged.len() as f32;
     let mut h = 66.0 + 40.0 + 12.0; // header + footer + list margin
     if snapshot.onboarding {
         h += 150.0;
@@ -138,35 +136,127 @@ fn list_height(snapshot: &Snapshot, recognized_open: bool) -> f32 {
     if snapshot.notifications == NotificationStatus::Disabled {
         h += 84.0;
     }
-    if !list.stale.is_empty() {
-        h += 38.0 + list.stale.len() as f32 * 60.0;
-    }
-    if managed + unmanaged == 0.0 && list.stale.is_empty() && list.recognized.is_empty() {
+    let discovered = list.discovered().len();
+    let groups = list.managed_groups().len() + usize::from(discovered > 0);
+    let servers = list.stale.len() + list.managed.len() + discovered;
+    if servers == 0 {
         h += 150.0;
+    } else {
+        h += 34.0 + groups as f32 * 32.0 + servers as f32 * 52.0;
     }
-    if managed > 0.0 {
-        let groups = list
-            .managed
-            .iter()
-            .map(|(_, p)| p.group())
-            .collect::<std::collections::BTreeSet<_>>()
-            .len();
-        h += 30.0 + groups as f32 * 32.0 + managed * 68.0;
-    }
-    if unmanaged > 0.0 {
-        h += 34.0 + unmanaged * 68.0;
-    }
-    if !list.recognized.is_empty() {
-        h += 34.0;
-        if recognized_open {
-            h += list.recognized.len() as f32 * 68.0;
-        }
+    let apps = app_entries(snapshot, &list).len();
+    if apps > 0 {
+        h += 34.0 + apps as f32 * 52.0;
     }
     h.clamp(240.0, 640.0)
 }
 
+/// An app the user marked as expected, with the servers it runs.
+pub struct Expected {
+    path: String,
+    ports: Vec<u16>,
+}
+
+/// The Apps section: heavy apps, plus each recognized app that runs a server,
+/// so recognized servers appear under the app that owns them.
+pub fn app_entries(
+    snapshot: &Snapshot,
+    list: &ProcessList<'_>,
+) -> Vec<(AppUsage, Option<Expected>)> {
+    let mut entries: Vec<(AppUsage, Option<Expected>)> = heavy_apps(&snapshot.apps)
+        .into_iter()
+        .map(|a| (a.clone(), None))
+        .collect();
+    let users = |a: &AppUsage, path: &str| {
+        a.app_bundle.as_deref() == Some(path)
+            && !matches!(a.instance, Some(pinch_proto::Instance::Automated { .. }))
+    };
+    for rule in &snapshot.recognized {
+        let servers: Vec<&ProcessInfo> = list
+            .recognized
+            .iter()
+            .map(|(_, p)| *p)
+            .filter(|p| p.recognizable_app() == Some(rule.path.as_str()))
+            .collect();
+        if servers.is_empty() {
+            continue;
+        }
+        let mut ports: Vec<u16> = servers.iter().flat_map(|p| p.ports.clone()).collect();
+        ports.sort_unstable();
+        ports.dedup();
+        let expected = Expected {
+            path: rule.path.clone(),
+            ports,
+        };
+        if let Some(entry) = entries.iter_mut().find(|(a, _)| users(a, &rule.path)) {
+            entry.1 = Some(expected);
+            continue;
+        }
+        // Light apps are absent from the heavy list; use the full usage
+        // reading, or failing that what their servers use.
+        let app = snapshot
+            .apps
+            .iter()
+            .find(|a| users(a, &rule.path))
+            .cloned()
+            .unwrap_or_else(|| AppUsage {
+                name: rule.name().to_string(),
+                app_bundle: Some(rule.path.clone()),
+                close: None,
+                instance: None,
+                process_count: servers.len() as u32,
+                cpu_percent: servers
+                    .iter()
+                    .filter_map(|p| p.metrics)
+                    .map(|m| m.cpu_percent)
+                    .sum(),
+                memory_bytes: servers
+                    .iter()
+                    .filter_map(|p| p.metrics)
+                    .map(|m| m.rss_bytes)
+                    .sum(),
+            });
+        entries.push((app, Some(expected)));
+    }
+    entries
+}
+
 /// How many apps the usage screen lists.
 const USAGE_ROWS: usize = 10;
+/// How many apps the main list's Heavy apps section shows at most.
+const HEAVY_ROWS: usize = 4;
+
+/// Apps worth a place beside the dev servers: an agent's browser, or
+/// anything using a lot of memory or CPU. Not a full activity monitor.
+pub fn heavy_apps(apps: &[AppUsage]) -> Vec<&AppUsage> {
+    let mut heavy: Vec<&AppUsage> = apps
+        .iter()
+        .filter(|a| {
+            matches!(a.instance, Some(pinch_proto::Instance::Automated { .. }))
+                || a.memory_bytes >= 1 << 30
+                || a.cpu_percent >= 25.0
+        })
+        .collect();
+    // Heaviest first, with instances of one app (yours, an agent's) together.
+    let app_key = |a: &AppUsage| a.app_bundle.clone().unwrap_or_else(|| a.name.clone());
+    let peak = |a: &AppUsage| {
+        let key = app_key(a);
+        apps.iter()
+            .filter(|other| app_key(other) == key)
+            .map(|other| other.memory_bytes)
+            .max()
+            .unwrap_or(0)
+    };
+    heavy.sort_by_key(|a| {
+        (
+            std::cmp::Reverse(peak(a)),
+            app_key(a),
+            std::cmp::Reverse(a.memory_bytes),
+        )
+    });
+    heavy.truncate(HEAVY_ROWS);
+    heavy
+}
 
 fn usage_height(snapshot: &Snapshot) -> f32 {
     let rows = snapshot.apps.len().clamp(1, USAGE_ROWS) as f32;
@@ -197,11 +287,8 @@ pub struct Popover {
     log_scroll: ScrollHandle,
     seen_active: bool,
     answering: bool,
-    confirm_stop: Option<ProcessInfo>,
-    stop_details_open: bool,
-    recognized_open: bool,
-    /// Main PID of the app whose Quit is awaiting confirmation.
-    confirm_quit: Option<u32>,
+    /// The row whose Stop, Quit, or Close is awaiting confirmation.
+    confirm: Option<String>,
 }
 
 impl Popover {
@@ -257,10 +344,7 @@ impl Popover {
             log_scroll: ScrollHandle::new(),
             seen_active: false,
             answering: false,
-            confirm_stop: None,
-            stop_details_open: false,
-            recognized_open: false,
-            confirm_quit: None,
+            confirm: None,
         }
     }
 
@@ -271,7 +355,7 @@ impl Popover {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let old_height = list_height(&self.snapshot, self.recognized_open);
+        let old_height = list_height(&self.snapshot);
         self.resources.update(cx, |current, cx| {
             *current = snapshot.system;
             cx.notify();
@@ -282,8 +366,8 @@ impl Popover {
                 *text = fresh;
                 self.log_scroll.scroll_to_bottom();
             }
-            (Screen::List, _) if self.confirm_stop.is_none() => {
-                let height = list_height(&self.snapshot, self.recognized_open);
+            (Screen::List, _) => {
+                let height = list_height(&self.snapshot);
                 if (height - old_height).abs() > 1.0 {
                     window.resize(size(px(WIDTH), px(height)));
                 }
@@ -357,50 +441,44 @@ impl Popover {
 
     /// Start from the list each time the resident panel is shown again.
     pub fn reopen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.confirm_stop = None;
-        self.confirm_quit = None;
-        self.stop_details_open = false;
+        self.confirm = None;
         self.screen = Screen::List;
-        window.resize(size(
-            px(WIDTH),
-            px(list_height(&self.snapshot, self.recognized_open)),
-        ));
+        window.resize(size(px(WIDTH), px(list_height(&self.snapshot))));
         cx.notify();
     }
 
     fn open_usage(&mut self, measure: Measure, window: &mut Window, cx: &mut Context<Self>) {
-        self.confirm_stop = None;
-        self.confirm_quit = None;
+        self.confirm = None;
         self.screen = Screen::Usage(measure);
         window.resize(size(px(WIDTH), px(usage_height(&self.snapshot))));
         cx.notify();
     }
 
-    fn quit_app(&mut self, app: &AppUsage, cx: &mut Context<Self>) {
-        self.confirm_quit = None;
-        if let Err(error) = resources::quit(app) {
-            self.snapshot.error = Some(error);
+    fn close_app(&mut self, app: &AppUsage, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirm = None;
+        match app.close {
+            Some(Close::Terminate { pid, started_at_s }) => {
+                self.send(Request::TerminateApp { pid, started_at_s }, window, cx);
+            }
+            _ => {
+                if let Err(error) = resources::quit(app) {
+                    self.snapshot.error = Some(error);
+                }
+            }
         }
         cx.notify();
     }
 
     fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.screen = Screen::List;
-        self.confirm_quit = None;
-        window.resize(size(
-            px(WIDTH),
-            px(list_height(&self.snapshot, self.recognized_open)),
-        ));
+        self.confirm = None;
+        window.resize(size(px(WIDTH), px(list_height(&self.snapshot))));
         cx.notify();
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if event.keystroke.key == "escape" {
-            if self.confirm_stop.take().is_some() {
-                window.resize(size(
-                    px(WIDTH),
-                    px(list_height(&self.snapshot, self.recognized_open)),
-                ));
+            if self.confirm.take().is_some() {
                 cx.notify();
                 return;
             }
@@ -604,461 +682,308 @@ impl Popover {
         .detach();
     }
 
-    fn stale_section(
+    fn servers(
         &self,
         list: &ProcessList<'_>,
         theme: Theme,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let decisions = list
-            .stale
-            .iter()
-            .map(|(_, d)| (*d).clone())
-            .collect::<Vec<_>>();
-        let summary = list
-            .stale
-            .iter()
-            .any(|(p, _)| p.metrics.is_some())
-            .then(|| format!("~{} to free", bytes(list.stale_ram())));
-        let stop = div()
-            .id("stop-stale")
-            .font_family(".SystemUIFont")
-            .font_weight(FontWeight::NORMAL)
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .text_size(px(11.0))
-            .text_color(theme.danger)
-            .child("Stop all")
-            .when(self.answering, |button| button.opacity(0.5))
-            .when(!self.answering, |button| {
-                button
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme.hover))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.stop_stale(decisions.clone(), window, cx);
-                    }))
-            });
-        div()
-            .child(
-                section_label(format!("STALE · {}", list.stale.len()), theme)
+    ) -> Vec<AnyElement> {
+        let groups = list.managed_groups();
+        let discovered = list.discovered();
+        if groups.is_empty() && discovered.is_empty() {
+            return Vec::new();
+        }
+        let decisions: Vec<Decision> = list.stale.iter().map(|(_, d)| (*d).clone()).collect();
+        let mut header = section_label("SERVERS", theme)
+            .flex()
+            .items_center()
+            .child(div().flex_1());
+        if !decisions.is_empty() {
+            let label = format!(
+                "Stop {} stale · ~{}",
+                decisions.len(),
+                bytes(list.stale_ram())
+            );
+            header = header.child(
+                header_action("stop-stale", label, theme.danger, theme)
+                    .when(self.answering, |button| button.opacity(0.5))
+                    .when(!self.answering, |button| {
+                        button.on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.stop_stale(decisions.clone(), window, cx);
+                        }))
+                    }),
+            );
+        }
+        let mut out = vec![header.into_any_element()];
+        for (key, entries) in groups {
+            out.push(agent_group_label(&key, theme).into_any_element());
+            for (p, decision) in entries {
+                out.push(self.server_row(p, decision, theme, cx));
+            }
+        }
+        if !discovered.is_empty() {
+            out.push(
+                div()
+                    .px_4()
+                    .pt_3()
+                    .pb_1()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(div().flex_1())
-                    .when_some(summary, |header, summary| {
-                        header.child(
-                            div()
-                                .font_family(MONO)
-                                .text_size(px(10.0))
-                                .font_weight(FontWeight::NORMAL)
-                                .text_color(theme.faint)
-                                .child(summary),
-                        )
-                    })
-                    .child(stop),
-            )
-            .children(list.stale.iter().map(|(process, decision)| {
-                let name = process.name.clone();
-                let group = process.group();
-                let workspace = process.repo.as_deref().unwrap_or(&process.cwd);
-                let workspace = std::path::Path::new(workspace)
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| workspace.to_string());
-                let quiet = decision.quiet_since_ms.map_or_else(
-                    || "quiet".into(),
-                    |since| format!("quiet {}", duration(now_ms().saturating_sub(since))),
-                );
-                let port = process
-                    .ports
-                    .first()
-                    .map(|p| format!(" · :{p}"))
-                    .unwrap_or_default();
-                let memory = process
-                    .metrics
-                    .map(|m| format!("~{}", bytes(m.rss_bytes)))
-                    .unwrap_or_default();
-                div()
-                    .id(SharedString::from(format!("stale-{}", process.id.0)))
-                    .mx_2()
-                    .px_2()
-                    .py_2()
-                    .rounded_md()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme.hover))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.open_logs(name.clone(), window, cx);
-                    }))
-                    .child(dot(theme.stale))
-                    .child(crate::icons::runtime(&process.kind))
+                    .text_size(px(11.0))
+                    .text_color(theme.muted)
+                    .child(crate::icons::harness(None, theme.muted))
                     .child(
                         div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(13.0))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(theme.muted)
-                                    .child(process.name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!(
-                                        "stale-context-{}",
-                                        process.id.0
-                                    )))
-                                    .truncate()
-                                    .text_size(px(11.0))
-                                    .text_color(theme.faint)
-                                    .child(format!("{workspace}{port}"))
-                                    .tooltip(move |_, cx| {
-                                        cx.new(|_| AgentGroupDetails(group.clone())).into()
-                                    }),
-                            ),
+                            .font_weight(FontWeight::MEDIUM)
+                            .child("Started outside Pinch"),
                     )
-                    .child(
-                        div()
-                            .flex_none()
-                            .flex()
-                            .flex_col()
-                            .items_end()
-                            .font_family(MONO)
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(theme.muted)
-                                    .child(memory),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.0))
-                                    .text_color(theme.faint)
-                                    .child(quiet),
-                            ),
-                    )
-            }))
+                    .into_any_element(),
+            );
+        }
+        for p in discovered {
+            out.push(self.server_row(p, None, theme, cx));
+        }
+        out
     }
 
-    fn process_row(
+    /// A server on a port: one Pinch started, or one it discovered.
+    fn server_row(
         &self,
-        index: usize,
         p: &ProcessInfo,
+        decision: Option<&Decision>,
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let managed = p.origin == Origin::Managed;
-        let alive = p.status.is_alive();
-        let color = if p.recognized {
-            theme.faint
-        } else {
-            match &p.status {
-                Status::Running => theme.running,
-                Status::Stale => theme.stale,
-                Status::Exited { .. } => theme.stopped,
-            }
-        };
-
-        let mut subtitle = vec![p.kind.label().to_string()];
-        if let Some(app) = p
-            .launcher_app
-            .as_deref()
-            .filter(|app| Some(*app) != p.app_bundle.as_deref())
-            && let Some(name) = std::path::Path::new(app).file_stem()
-        {
-            subtitle.push(format!("via {}", name.to_string_lossy()));
-        }
-        if !managed && let Some(repo) = p.repo.as_deref().and_then(|r| r.rsplit('/').next()) {
-            subtitle.push(match &p.branch {
-                Some(b) => format!("{repo}@{b}"),
-                None => repo.to_string(),
-            });
-        }
-        if let Some(owner) = &p.owner {
-            subtitle.push(owner.clone());
-        }
-
-        if let Status::Exited { code: Some(code) } = &p.status {
-            subtitle.push(format!("exit {code}"));
-        }
-
-        if !managed {
-            subtitle.push(
-                p.executable
-                    .clone()
-                    .unwrap_or_else(|| "Executable unknown".into()),
-            );
-            subtitle.push(format!("PID {}", p.pid.unwrap_or_default()));
-        }
-
-        let right_top = match (p.ports.first(), &p.status) {
-            (Some(port), _) => format!(":{port}"),
-            (None, Status::Exited { code: Some(c) }) => format!("exit {c}"),
-            (None, Status::Exited { code: None }) => "stopped".into(),
-            _ if p.metrics.is_none() => "starting".into(),
-            _ => String::new(),
-        };
-        let right_bottom = match (alive, p.metrics) {
-            (true, Some(m)) => format!(
-                "CPU {:.0}% · {} RAM · up {}",
-                m.cpu_percent,
-                bytes(m.rss_bytes),
+        let key = format!("server:{}", p.id.0);
+        let mut subtitle = Vec::new();
+        let (dot, subtitle_color) = if let Some(decision) = decision {
+            subtitle.push(decision.quiet_since_ms.map_or_else(
+                || "quiet".into(),
+                |since| format!("quiet {}", duration(now_ms().saturating_sub(since))),
+            ));
+            (Dot::Filled(theme.stale), theme.stale)
+        } else if managed {
+            subtitle.push(p.kind.label().to_string());
+            subtitle.push(format!(
+                "up {}",
                 duration(now_ms().saturating_sub(p.started_at_ms))
-            ),
-            (true, None) => format!("up {}", duration(now_ms().saturating_sub(p.started_at_ms))),
-            _ => String::new(),
+            ));
+            (Dot::Filled(theme.running), theme.faint)
+        } else {
+            subtitle.push(p.kind.label().to_string());
+            if p.recognized {
+                subtitle.push("✓ expected".into());
+            }
+            if let Some(repo) = p.repo.as_deref().and_then(|r| r.rsplit('/').next()) {
+                subtitle.push(match &p.branch {
+                    Some(b) => format!("{repo}@{b}"),
+                    None => repo.to_string(),
+                });
+            }
+            let color = if p.recognized {
+                theme.faint
+            } else {
+                theme.muted
+            };
+            (Dot::Hollow(color), theme.faint)
+        };
+        subtitle.extend(p.ports.first().map(|port| format!(":{port}")));
+        let (primary, secondary) = match p.metrics {
+            Some(m) => (bytes(m.rss_bytes), format!("{:.0}% CPU", m.cpu_percent)),
+            None => ("starting".into(), String::new()),
         };
 
-        let name = p.name.clone();
-        let target = p.id.0.clone();
-        let mut row = div()
-            .id(("row", index))
-            .group("row")
-            .mx_2()
-            .px_2()
-            .py_2()
-            .rounded_md()
-            .flex()
-            .items_center()
-            .gap_3()
-            .hover(|s| s.bg(theme.hover))
-            .child(dot(color))
-            .child(crate::icons::runtime(&p.kind))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(if alive && !p.recognized {
-                                theme.text
-                            } else {
-                                theme.muted
-                            })
-                            .child(name.clone()),
-                    )
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(px(11.0))
-                            .text_color(theme.muted)
-                            .child(subtitle.join(" · ")),
-                    )
-                    .when(alive, |column| {
-                        column.child(
-                            div()
-                                .font_family(MONO)
-                                .text_size(px(10.0))
-                                .text_color(theme.muted)
-                                .child(right_bottom),
-                        )
-                    }),
-            )
-            .when(alive, |row| {
-                row.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .items_end()
-                        .font_family(MONO)
-                        .child(div().text_size(px(12.0)).child(right_top)),
-                )
-            });
-
-        {
-            let recognize = (!managed).then(|| {
-                let process = p.clone();
-                let label = if p.recognized {
-                    p.recognizable_app()
-                        .map(|app| format!("Unrecognize {}", app_name(app)))
-                        .unwrap_or_else(|| "Unrecognize this process".into())
-                } else {
-                    p.recognizable_app()
-                        .map(|app| format!("Recognize {}", app_name(app)))
-                        .unwrap_or_else(|| "Recognize until this process exits".into())
-                };
+        let mut actions = Vec::new();
+        if !managed {
+            let process = p.clone();
+            let label = match (p.recognized, p.recognizable_app()) {
+                (true, Some(app)) => format!("Unrecognize {}", app_name(app)),
+                (true, None) => "Unrecognize this process".into(),
+                (false, Some(app)) => format!("Recognize {}", app_name(app)),
+                (false, None) => "Recognize until this process exits".into(),
+            };
+            let icon = if p.recognized {
+                "icons/undo.svg"
+            } else {
+                "icons/check.svg"
+            };
+            actions.push(
                 icon_button(
-                    ("recognize", index),
-                    if p.recognized {
-                        "icons/undo.svg"
-                    } else {
-                        "icons/check.svg"
-                    },
+                    SharedString::from(format!("recognize-{}", p.id.0)),
+                    icon,
                     label,
-                    theme.muted,
+                    theme.text,
                     theme,
                 )
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                     cx.stop_propagation();
+                    let process = Box::new(process.clone());
                     this.send(
                         if process.recognized {
-                            Request::Unrecognize {
-                                process: Box::new(process.clone()),
-                            }
+                            Request::Unrecognize { process }
                         } else {
-                            Request::Recognize {
-                                process: Box::new(process.clone()),
-                            }
+                            Request::Recognize { process }
                         },
                         window,
                         cx,
                     );
                 }))
-            });
-            let process = p.clone();
-            let stop = icon_button(
-                (if alive { "stop" } else { "clear" }, index),
+                .into_any_element(),
+            );
+        }
+        let target = p.id.0.clone();
+        let confirm_key = key.clone();
+        actions.push(
+            icon_button(
+                SharedString::from(format!("stop-{}", p.id.0)),
                 "icons/x.svg",
-                match (alive, managed) {
-                    (false, _) => "Clear",
-                    (true, true) => "Stop",
-                    (true, false) => "Stop…",
-                },
+                if managed { "Stop" } else { "Stop…" },
                 theme.danger,
                 theme,
-            );
-            let mut actions = div().flex().flex_none().gap_1().children(recognize);
-            if alive {
-                actions = actions.invisible().group_hover("row", |s| s.visible());
-            }
-            row = row.child(actions.child(stop.on_click(cx.listener(
-                move |this, _: &ClickEvent, window, cx| {
-                    cx.stop_propagation();
-                    if !managed {
-                        this.confirm_stop = Some(process.clone());
-                        this.stop_details_open = false;
-                        window.resize(size(px(WIDTH), px(440.0)));
-                        cx.notify();
-                        return;
-                    }
+            )
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                cx.stop_propagation();
+                if managed {
                     this.send(
-                        if alive {
-                            Request::Stop {
-                                name: target.clone(),
-                            }
-                        } else {
-                            Request::Clear {
-                                name: target.clone(),
-                            }
+                        Request::Stop {
+                            name: target.clone(),
                         },
                         window,
                         cx,
                     );
-                },
-            ))));
-        }
+                } else {
+                    this.confirm = Some(confirm_key.clone());
+                    cx.notify();
+                }
+            }))
+            .into_any_element(),
+        );
+
+        let confirm = (self.confirm.as_deref() == Some(key.as_str())).then(|| {
+            let process = p.clone();
+            self.confirm_buttons(&key, "Stop", theme, cx, move |this, window, cx| {
+                this.send(
+                    Request::StopDiscovered {
+                        process: Box::new(process.clone()),
+                    },
+                    window,
+                    cx,
+                );
+            })
+        });
+
+        let name = p.name.clone();
+        let row = render_row(
+            Row {
+                id: SharedString::from(key),
+                dot,
+                icon: crate::icons::runtime(&p.kind),
+                title: p.name.clone(),
+                subtitle: subtitle.join(" · "),
+                subtitle_color,
+                details: (!managed).then(|| p.clone()),
+                primary,
+                secondary,
+                share: None,
+            },
+            actions,
+            confirm,
+            theme,
+        );
         if managed {
-            row = row.cursor_pointer().on_click(cx.listener(
-                move |this, _: &ClickEvent, window, cx| {
+            row.cursor_pointer()
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                     this.open_logs(name.clone(), window, cx);
-                },
+                }))
+                .into_any_element()
+        } else {
+            row.into_any_element()
+        }
+    }
+
+    fn apps(
+        &self,
+        list: &ProcessList<'_>,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let entries = app_entries(&self.snapshot, list);
+        if entries.is_empty() {
+            return Vec::new();
+        }
+        let header = section_label("APPS", theme)
+            .flex()
+            .items_center()
+            .child(div().flex_1())
+            .child(
+                header_action("apps-all", "All apps ›".into(), theme.muted, theme).on_click(
+                    cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.open_usage(Measure::Memory, window, cx)
+                    }),
+                ),
+            );
+        let mut out = vec![header.into_any_element()];
+        for (index, (app, expected)) in entries.iter().enumerate() {
+            out.push(self.app_row(
+                "apps",
+                index,
+                app,
+                Measure::Memory,
+                None,
+                expected.as_ref(),
+                theme,
+                cx,
             ));
         }
-        row.into_any_element()
+        out
+    }
+
+    /// Cancel and a red confirm button, shown in place of a row's numbers.
+    fn confirm_buttons(
+        &self,
+        key: &str,
+        label: &'static str,
+        theme: Theme,
+        cx: &mut Context<Self>,
+        on_confirm: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> AnyElement {
+        div()
+            .flex()
+            .flex_none()
+            .gap_1()
+            .child(
+                button(
+                    SharedString::from(format!("{key}-cancel")),
+                    "Cancel",
+                    false,
+                    theme,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.confirm = None;
+                    cx.notify();
+                })),
+            )
+            .child(
+                button(
+                    SharedString::from(format!("{key}-confirm")),
+                    label,
+                    true,
+                    theme,
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.confirm = None;
+                    on_confirm(this, window, cx);
+                })),
+            )
+            .into_any_element()
     }
 
     fn list(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let list = ProcessList::new(&self.snapshot.processes, &self.snapshot.decisions);
-        let managed = &list.managed;
-        let unmanaged = &list.unmanaged;
-
-        if let Some(process) = &self.confirm_stop {
-            let confirmed = process.clone();
-            let mut card = div().flex().flex_col().flex_1().min_h_0().px_4().pb_3().gap_2()
-                .child(div().flex_shrink_0().text_size(px(13.0)).font_weight(FontWeight::SEMIBOLD).child("Stop this process?"))
-                .child(div().flex_shrink_0().truncate().text_size(px(12.0)).child(process.name.clone()))
-                .child(div().flex_shrink_0().text_size(px(12.0)).child("Started outside Pinch. Stopping it may interrupt another app or lose unsaved work. Only this PID receives SIGTERM; it may stay running or restart."))
-                .child(div().flex_shrink_0().text_size(px(11.0)).child(format!("PID {}", process.pid.unwrap_or_default())))
-                .child(div().id("stop-details-toggle").flex_shrink_0().cursor_pointer().text_size(px(11.0))
-                    .child(if self.stop_details_open { "▾ Process details" } else { "▸ Process details" })
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.stop_details_open = !this.stop_details_open;
-                        cx.notify();
-                    })));
-            if self.stop_details_open {
-                let mut details = div()
-                    .id("stop-details")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_col()
-                    .gap_2();
-                for detail in [
-                    format!("Name: {}", process.name),
-                    format!(
-                        "App (detected): {}",
-                        process.app_bundle.as_deref().unwrap_or("Unknown")
-                    ),
-                    format!(
-                        "Launched via (detected): {}",
-                        process.launcher_app.as_deref().unwrap_or("Unknown")
-                    ),
-                    format!(
-                        "Executable: {}",
-                        process.executable.as_deref().unwrap_or("Unknown")
-                    ),
-                    format!("Command: {}", process.command.join(" ")),
-                    format!("Directory: {}", process.cwd),
-                ] {
-                    details =
-                        details.child(div().flex_shrink_0().text_size(px(11.0)).child(detail));
-                }
-                card = card.child(details);
-            } else {
-                card = card.child(div().flex_1());
-            }
-            return card
-                .child(
-                    div()
-                        .flex()
-                        .flex_shrink_0()
-                        .gap_2()
-                        .child(
-                            button("cancel-stop", "Cancel", false, theme).on_click(cx.listener(
-                                |this, _: &ClickEvent, window, cx| {
-                                    this.confirm_stop = None;
-                                    window.resize(size(
-                                        px(WIDTH),
-                                        px(list_height(&this.snapshot, this.recognized_open)),
-                                    ));
-                                    cx.notify();
-                                },
-                            )),
-                        )
-                        .child(
-                            button("confirm-stop", "Stop this process", false, theme)
-                                .bg(theme.border)
-                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                    this.confirm_stop = None;
-                                    window.resize(size(
-                                        px(WIDTH),
-                                        px(list_height(&this.snapshot, this.recognized_open)),
-                                    ));
-                                    this.send(
-                                        Request::StopDiscovered {
-                                            process: Box::new(confirmed.clone()),
-                                        },
-                                        window,
-                                        cx,
-                                    );
-                                })),
-                        ),
-                )
-                .into_any_element();
-        }
         let mut body = div()
             .id("list")
             .flex_1()
@@ -1082,9 +1007,6 @@ impl Popover {
                         })),
             );
         }
-        if !list.stale.is_empty() {
-            body = body.child(self.stale_section(&list, theme, cx));
-        }
         if let Some(error) = &self.snapshot.error {
             body = body.child(
                 div()
@@ -1095,13 +1017,8 @@ impl Popover {
                     .child(error.clone()),
             );
         }
-        if managed.is_empty()
-            && unmanaged.is_empty()
-            && list.recognized.is_empty()
-            && list.stale.is_empty()
-            && self.snapshot.error.is_none()
-            && !self.snapshot.loading
-        {
+        let servers = self.servers(&list, theme, cx);
+        if servers.is_empty() && self.snapshot.error.is_none() && !self.snapshot.loading {
             body = body.child(
                 div()
                     .flex()
@@ -1110,13 +1027,11 @@ impl Popover {
                     .gap_1()
                     .py_8()
                     .child(
-                        div().text_size(px(28.0)).child(
-                            gpui::svg()
-                                .path("brand/daemon.svg")
-                                .w(px(48.))
-                                .h(px(48.))
-                                .text_color(theme.muted),
-                        ),
+                        gpui::svg()
+                            .path("brand/daemon.svg")
+                            .w(px(48.))
+                            .h(px(48.))
+                            .text_color(theme.muted),
                     )
                     .child(
                         div()
@@ -1132,59 +1047,9 @@ impl Popover {
                     ),
             );
         }
-        if !managed.is_empty() {
-            body = body.child(section_label("MANAGED", theme));
-            let mut groups = std::collections::BTreeMap::<_, Vec<_>>::new();
-            for &(i, p) in managed {
-                groups.entry(p.group()).or_default().push((i, p));
-            }
-            for (key, entries) in groups {
-                body = body.child(agent_group_label(&key, theme));
-                for (i, p) in entries {
-                    body = body.child(self.process_row(i, p, theme, cx));
-                }
-            }
-        }
-        if !unmanaged.is_empty() {
-            body = body.child(section_label("UNRECOGNIZED", theme));
-            for &(i, p) in unmanaged {
-                body = body.child(self.process_row(i, p, theme, cx));
-            }
-        }
-        if !list.recognized.is_empty() {
-            let ram: u64 = list
-                .recognized
-                .iter()
-                .filter_map(|(_, p)| p.metrics)
-                .map(|m| m.rss_bytes)
-                .sum();
-            body = body.child(
-                section_label(
-                    format!("RECOGNIZED · {} · {}", list.recognized.len(), bytes(ram)),
-                    theme,
-                )
-                .id("recognized-toggle")
-                .cursor_pointer()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(if self.recognized_open { "▾" } else { "▸" })
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                    this.recognized_open = !this.recognized_open;
-                    window.resize(size(
-                        px(WIDTH),
-                        px(list_height(&this.snapshot, this.recognized_open)),
-                    ));
-                    cx.notify();
-                })),
-            );
-            if self.recognized_open {
-                for &(i, p) in &list.recognized {
-                    body = body.child(self.process_row(i, p, theme, cx));
-                }
-            }
-        }
-        body.into_any_element()
+        body.children(servers)
+            .children(self.apps(&list, theme, cx))
+            .into_any_element()
     }
 
     fn logs_view(
@@ -1531,6 +1396,15 @@ impl Popover {
                 theme,
             ),
         };
+        let rows: Vec<AnyElement> = apps
+            .into_iter()
+            .enumerate()
+            .map(|(index, app)| {
+                let share = (value(app) / max).clamp(0.0, 1.0) as f32;
+                self.app_row("usage", index, app, measure, Some(share), None, theme, cx)
+            })
+            .collect();
+
         let tab = |id: &'static str, label: &'static str, target: Measure| {
             let active = measure == target;
             div()
@@ -1550,136 +1424,6 @@ impl Popover {
                     this.open_usage(target, window, cx)
                 }))
         };
-
-        let rows = apps.into_iter().enumerate().map(|(index, app)| {
-            let (primary, secondary) = match measure {
-                Measure::Cpu => (
-                    format!("{:.0}%", app.cpu_percent),
-                    resources::bytes(app.memory_bytes),
-                ),
-                Measure::Memory => (
-                    resources::bytes(app.memory_bytes),
-                    format!("{:.0}% CPU", app.cpu_percent),
-                ),
-            };
-            let processes = match app.process_count {
-                1 => "1 process".to_string(),
-                n => format!("{n} processes"),
-            };
-            let share = (value(app) / max).clamp(0.0, 1.0) as f32;
-            let confirming = app.quit_pid.is_some() && self.confirm_quit == app.quit_pid;
-            let right = if confirming {
-                let quit = app.clone();
-                div()
-                    .flex()
-                    .flex_none()
-                    .gap_1()
-                    .child(
-                        button(("usage-cancel", index), "Cancel", false, theme).on_click(
-                            cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.confirm_quit = None;
-                                cx.notify();
-                            }),
-                        ),
-                    )
-                    .child(
-                        button(("usage-quit-confirm", index), "Quit", true, theme).on_click(
-                            cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                this.quit_app(&quit, cx)
-                            }),
-                        ),
-                    )
-                    .into_any_element()
-            } else {
-                let pid = app.quit_pid;
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap_2()
-                    .when_some(pid, |right, pid| {
-                        right.child(
-                            button(("usage-quit", index), "Quit", false, theme)
-                                .invisible()
-                                .group_hover("usage-row", |s| s.visible())
-                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                    this.confirm_quit = Some(pid);
-                                    cx.notify();
-                                })),
-                        )
-                    })
-                    .child(
-                        div()
-                            .w(px(64.0))
-                            .flex()
-                            .flex_col()
-                            .items_end()
-                            .font_family(MONO)
-                            .child(div().text_size(px(12.0)).child(primary))
-                            .child(
-                                div()
-                                    .text_size(px(10.5))
-                                    .text_color(theme.faint)
-                                    .child(secondary),
-                            ),
-                    )
-                    .into_any_element()
-            };
-            div()
-                .id(("usage-row", index))
-                .group("usage-row")
-                .mx_2()
-                .px_2()
-                .py(px(6.0))
-                .rounded_md()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .hover(|s| s.bg(theme.hover))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap(px(2.0))
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_size(px(13.0))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child(app.name.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(11.0))
-                                        .text_color(theme.faint)
-                                        .child(processes),
-                                ),
-                        )
-                        .child(right),
-                )
-                // Full row width, so bars compare across rows.
-                .child(
-                    div()
-                        .h(px(3.0))
-                        .w_full()
-                        .rounded_full()
-                        .bg(theme.border)
-                        .child(
-                            div()
-                                .h_full()
-                                .w(gpui::relative(share))
-                                .rounded_full()
-                                .bg(theme.muted),
-                        ),
-                )
-        });
 
         div()
             .flex()
@@ -1772,6 +1516,121 @@ impl Popover {
             .into_any_element()
     }
 
+    /// One app in the usage screen or the main list's Apps section.
+    /// `share` draws a bar relative to the heaviest app shown.
+    #[allow(clippy::too_many_arguments)]
+    fn app_row(
+        &self,
+        prefix: &'static str,
+        index: usize,
+        app: &AppUsage,
+        measure: Measure,
+        share: Option<f32>,
+        expected: Option<&Expected>,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let key = format!("{prefix}-{index}");
+        let (primary, secondary) = match measure {
+            Measure::Cpu => (
+                format!("{:.0}%", app.cpu_percent),
+                resources::bytes(app.memory_bytes),
+            ),
+            Measure::Memory => (
+                resources::bytes(app.memory_bytes),
+                format!("{:.0}% CPU", app.cpu_percent),
+            ),
+        };
+        let automated = matches!(app.instance, Some(pinch_proto::Instance::Automated { .. }));
+        let mut subtitle: Vec<String> = app.instance.iter().map(|i| i.label()).collect();
+        subtitle.push(match app.process_count {
+            1 => "1 process".to_string(),
+            n => format!("{n} processes"),
+        });
+        if let Some(expected) = expected {
+            let ports: Vec<String> = expected.ports.iter().map(|p| format!(":{p}")).collect();
+            if !ports.is_empty() {
+                subtitle.push(format!("runs {}", ports.join(" ")));
+            }
+            subtitle.push("✓ expected".into());
+        }
+        let dot = if automated {
+            Dot::Filled(theme.stale)
+        } else if expected.is_some() && heavy_apps(std::slice::from_ref(app)).is_empty() {
+            Dot::Filled(theme.faint)
+        } else {
+            Dot::Filled(theme.running)
+        };
+        let close_label = match app.close {
+            Some(Close::Terminate { .. }) => "Close",
+            _ => "Quit",
+        };
+
+        let mut actions = Vec::new();
+        if let Some(expected) = expected {
+            let path = expected.path.clone();
+            actions.push(
+                icon_button(
+                    SharedString::from(format!("{key}-forget")),
+                    "icons/undo.svg",
+                    format!("Unrecognize {}", app.name),
+                    theme.text,
+                    theme,
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.send(Request::Forget { app: path.clone() }, window, cx);
+                }))
+                .into_any_element(),
+            );
+        }
+        if app.close.is_some() {
+            let confirm_key = key.clone();
+            let tooltip = if automated {
+                "Close the agent's browser…".to_string()
+            } else {
+                format!("Quit {}…", app.name)
+            };
+            actions.push(
+                icon_button(
+                    SharedString::from(format!("{key}-close")),
+                    "icons/x.svg",
+                    tooltip,
+                    theme.danger,
+                    theme,
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.confirm = Some(confirm_key.clone());
+                    cx.notify();
+                }))
+                .into_any_element(),
+            );
+        }
+        let confirm = (self.confirm.as_deref() == Some(key.as_str())).then(|| {
+            let target = app.clone();
+            self.confirm_buttons(&key, close_label, theme, cx, move |this, window, cx| {
+                this.close_app(&target, window, cx)
+            })
+        });
+        render_row(
+            Row {
+                id: SharedString::from(key),
+                dot,
+                icon: crate::icons::app(app.app_bundle.as_deref(), &app.name),
+                title: app.name.clone(),
+                subtitle: subtitle.join(" · "),
+                subtitle_color: if automated { theme.stale } else { theme.faint },
+                details: None,
+                primary,
+                secondary,
+                share,
+            },
+            actions,
+            confirm,
+            theme,
+        )
+        .into_any_element()
+    }
+
     fn configuration_button(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("configuration")
@@ -1791,7 +1650,7 @@ impl Popover {
             )
             .tooltip(|_, cx| cx.new(|_| TextTooltip("Configuration".into())).into())
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                this.confirm_stop = None;
+                this.confirm = None;
                 this.screen = Screen::Configuration;
                 window.resize(size(px(WIDTH), px(configuration_height(&this.snapshot))));
                 cx.notify();
@@ -1895,6 +1754,205 @@ impl Render for Popover {
 
 fn dot(color: Rgba) -> impl IntoElement {
     div().w(px(8.0)).h(px(8.0)).rounded_full().bg(color)
+}
+
+/// Filled for something running as expected or needing attention; hollow
+/// for a server Pinch did not start.
+enum Dot {
+    Filled(Rgba),
+    Hollow(Rgba),
+}
+
+/// What every server and app row shows, in the same places.
+struct Row {
+    id: SharedString,
+    dot: Dot,
+    icon: AnyElement,
+    title: String,
+    subtitle: String,
+    subtitle_color: Rgba,
+    /// Shown as a tooltip on the subtitle.
+    details: Option<ProcessInfo>,
+    primary: String,
+    secondary: String,
+    share: Option<f32>,
+}
+
+/// The shared row: dot, icon, name and subtitle, then the numbers, with
+/// actions revealed on hover. `confirm` replaces actions and numbers.
+fn render_row(
+    row: Row,
+    actions: Vec<AnyElement>,
+    confirm: Option<AnyElement>,
+    theme: Theme,
+) -> gpui::Stateful<gpui::Div> {
+    let group = row.id.clone();
+    let dot = div().w(px(8.0)).h(px(8.0)).flex_none().rounded_full();
+    let dot = match row.dot {
+        Dot::Filled(color) => dot.bg(color),
+        Dot::Hollow(color) => dot.border_1().border_color(color),
+    };
+    let numbers = div()
+        .w(px(64.0))
+        .flex()
+        .flex_col()
+        .items_end()
+        .font_family(MONO)
+        .child(div().text_size(px(12.0)).child(row.primary))
+        .child(
+            div()
+                .text_size(px(10.5))
+                .text_color(theme.faint)
+                .child(row.secondary),
+        );
+    let right = confirm.unwrap_or_else(|| {
+        let hover_group = group.clone();
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_2()
+            .when(!actions.is_empty(), |right| {
+                right.child(
+                    div()
+                        .flex()
+                        .gap_1()
+                        .invisible()
+                        .group_hover(hover_group, |s| s.visible())
+                        .children(actions),
+                )
+            })
+            .child(numbers)
+            .into_any_element()
+    });
+    let details = row.details;
+    div()
+        .id(row.id.clone())
+        .group(group)
+        .mx_2()
+        .px_2()
+        .py(px(6.0))
+        .rounded_md()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .hover(|s| s.bg(theme.hover))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(dot)
+                .child(row.icon)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(
+                            div()
+                                .truncate()
+                                .text_size(px(13.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(row.title),
+                        )
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("{}-subtitle", row.id)))
+                                .truncate()
+                                .text_size(px(11.0))
+                                .text_color(row.subtitle_color)
+                                .child(row.subtitle)
+                                .when_some(details, |subtitle, details| {
+                                    subtitle.tooltip(move |_, cx| {
+                                        cx.new(|_| ProcessDetails(details.clone())).into()
+                                    })
+                                }),
+                        ),
+                )
+                .child(right),
+        )
+        // Full row width, so bars compare across rows.
+        .when_some(row.share, |el, share| {
+            el.child(
+                div()
+                    .h(px(3.0))
+                    .w_full()
+                    .rounded_full()
+                    .bg(theme.border)
+                    .child(
+                        div()
+                            .h_full()
+                            .w(gpui::relative(share))
+                            .rounded_full()
+                            .bg(theme.muted),
+                    ),
+            )
+        })
+}
+
+fn header_action(
+    id: &'static str,
+    label: String,
+    color: Rgba,
+    theme: Theme,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .px_2()
+        .rounded_md()
+        .font_family(".SystemUIFont")
+        .font_weight(FontWeight::NORMAL)
+        .text_size(px(11.0))
+        .text_color(color)
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.hover))
+        .child(label)
+}
+
+/// Where a discovered server came from, before stopping it.
+struct ProcessDetails(ProcessInfo);
+
+impl Render for ProcessDetails {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::for_appearance(window.appearance());
+        let p = &self.0;
+        let unknown = |v: Option<&str>| v.unwrap_or("Unknown").to_string();
+        let lines = [
+            format!("PID {}", p.pid.unwrap_or_default()),
+            format!("App: {}", unknown(p.app_bundle.as_deref())),
+            format!("Launched via: {}", unknown(p.launcher_app.as_deref())),
+            format!("Executable: {}", unknown(p.executable.as_deref())),
+            format!("Command: {}", p.command.join(" ")),
+            format!("Directory: {}", p.cwd),
+        ];
+        div()
+            .p_3()
+            .max_w(px(380.0))
+            .rounded_lg()
+            .bg(theme.tooltip)
+            .border_1()
+            .border_color(theme.border)
+            .shadow_md()
+            .text_size(px(11.0))
+            .text_color(theme.text)
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Started outside Pinch"),
+            )
+            .child(
+                div().text_color(theme.muted).child(
+                    "Stop sends SIGTERM to this PID only; it may restart or lose unsaved work.",
+                ),
+            )
+            .children(lines.into_iter().map(|line| div().child(line)))
+    }
 }
 
 fn agent_group_label(group: &ProcessGroup, theme: Theme) -> impl IntoElement {

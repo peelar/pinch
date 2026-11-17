@@ -4,7 +4,7 @@ use gpui::{
     App, ClickEvent, Context, Entity, FontWeight, IntoElement, Render, Rgba, Window, div,
     prelude::*, px,
 };
-use pinch_proto::{AppUsage, MemoryPressure, SystemMetrics};
+use pinch_proto::{AppUsage, Close, MemoryPressure, SystemMetrics};
 
 use crate::theme::Theme;
 
@@ -73,7 +73,7 @@ pub fn pressure_label(pressure: Option<MemoryPressure>) -> Option<&'static str> 
 /// work or refuse. Checks that the PID still belongs to the same app.
 pub fn quit(app: &AppUsage) -> Result<(), String> {
     use objc2_app_kit::NSRunningApplication;
-    let (Some(pid), Some(bundle)) = (app.quit_pid, app.app_bundle.as_deref()) else {
+    let (Some(Close::Quit { pid }), Some(bundle)) = (app.close, app.app_bundle.as_deref()) else {
         return Err(format!("{} can't be quit from Pinch", app.name));
     };
     let running = i32::try_from(pid)

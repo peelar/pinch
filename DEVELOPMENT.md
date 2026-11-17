@@ -60,9 +60,11 @@ python3 scripts/fixture.py
 ```
 
 Use a bundle built from this checkout so its UI and fixture protocol match.
-The default scene has one Stale process, a Managed workspace, an Unrecognized
-server, and two Recognized processes totaling 210 MiB. Expand Recognized, hover
-rows, open logs or Configuration, and try recognize, undo, Stop, and Stop all.
+The default scene lists Servers (two agent workspaces, one with a stale server,
+and two servers started outside Pinch, one recognized) and Apps (heavy apps,
+an agent's automated Chrome beside the user's own, and recognized Raycast with
+the server it runs). Hover rows, open logs or Configuration, and try recognize,
+undo, Stop, Stop stale, and Close.
 Actions change the sample data; restarting the command resets it.
 
 The runner starts a fixture socket in a temporary `PINCH_HOME` and launches the
@@ -82,7 +84,9 @@ python3 scripts/fixture.py --scenario busy
 ```
 
 The `busy` scenario shows red CPU and RAM meters under critical memory
-pressure. Click either meter to open the per-app usage view.
+pressure. **All apps ›** or either meter opens the per-app usage view. Closing
+the automated Chrome removes it from the sample data; Quit asks the real app and
+fails because the fixture PIDs are fake.
 
 For native automation, use a named fixture bundle so tools can select its window
 separately from the running regular app:
@@ -263,10 +267,10 @@ PID alone; it never signals the group or escalates to SIGKILL.
 
 ### Recognized processes
 
-Every **Unrecognized** row can be recognized. Processes stay visible and stoppable
-in the muted **Recognized** section at the bottom. It starts collapsed with a
-process count and RAM total; click to expand. Recognized processes still count
-toward the header's running count and RAM total.
+Every server started outside Pinch can be recognized. A recognized installed app
+moves its servers into **Apps**, on that app's row with its ports and an undo
+action; a server recognized until it exits stays in **Servers** marked expected.
+Recognized processes still count toward the header's running count and RAM total.
 
 For an installed app directly inside `/Applications` or `~/Applications`, the rule
 covers its future processes too. Configuration lists these apps. Processes inside

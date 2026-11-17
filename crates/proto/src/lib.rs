@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped on any breaking change to [`Request`] or [`Response`]; clients and
 /// the engine refuse to talk across versions.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// Stable id of a managed process, assigned by the engine.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -304,20 +304,60 @@ pub enum MemoryPressure {
     Critical,
 }
 
-/// Whole-computer usage of one app (all its helper processes) or of all
-/// processes sharing a name, sampled with the system metrics.
+/// Whole-computer usage of one app (all its helper processes), one instance
+/// of an app that runs several, or all processes sharing a name, sampled with
+/// the system metrics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppUsage {
     pub name: String,
     /// Outermost `.app` bundle when the processes belong to one.
     pub app_bundle: Option<String>,
-    /// The app's main process: the one a normal Quit is sent to. `None` for
-    /// non-app groups and for apps Pinch must not offer to quit.
-    pub quit_pid: Option<u32>,
+    /// How Pinch may close it; `None` when it must not offer to.
+    pub close: Option<Close>,
+    /// Whose instance this is, when an app also runs automated instances.
+    pub instance: Option<Instance>,
     pub process_count: u32,
     /// Sum over processes, Activity Monitor style: 100% is one full core.
     pub cpu_percent: f32,
     pub memory_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum Close {
+    /// Ask the app's main process to quit the normal way, as the Dock does.
+    Quit { pid: u32 },
+    /// Send SIGTERM to this process; its helpers exit with it.
+    Terminate { pid: u32, started_at_s: u64 },
+}
+
+impl Close {
+    pub fn pid(self) -> u32 {
+        match self {
+            Self::Quit { pid } | Self::Terminate { pid, .. } => pid,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum Instance {
+    /// The one the user opened.
+    Yours,
+    /// Driven by automation, such as an agent's browser.
+    Automated { launched_by: Option<String> },
+}
+
+impl Instance {
+    pub fn label(&self) -> String {
+        match self {
+            Self::Yours => "yours".into(),
+            Self::Automated {
+                launched_by: Some(by),
+            } => format!("agent's browser · started by {by}"),
+            Self::Automated { launched_by: None } => "agent's browser".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -395,6 +435,11 @@ pub enum Request {
     /// Explicitly confirmed termination of one discovered PID, never its group.
     StopDiscovered {
         process: Box<ProcessInfo>,
+    },
+    /// Close a process from the usage list that Pinch offers to terminate.
+    TerminateApp {
+        pid: u32,
+        started_at_s: u64,
     },
     /// Mark an installed app or this one running process as expected.
     Recognize {

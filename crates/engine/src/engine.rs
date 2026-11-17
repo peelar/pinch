@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use pinch_client::{home, logs_dir, now_ms};
 use pinch_proto::{
-    AppUsage, Decision, DecisionAnswer, Metrics, Origin, ProcessId, ProcessInfo, ProcessKind,
-    RecognizedApp, Spawn, Status, SystemMetrics,
+    AppUsage, Close, Decision, DecisionAnswer, Metrics, Origin, ProcessId, ProcessInfo,
+    ProcessKind, RecognizedApp, Spawn, Status, SystemMetrics,
 };
 use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -94,6 +94,8 @@ struct Sampler {
     sys: System,
     cpu_totals: HashMap<u32, u64>,
     system_sampled_at: Option<Instant>,
+    /// Process trees of servers the list already shows, from the last tick.
+    server_pids: HashSet<u32>,
 }
 
 pub struct Engine {
@@ -179,6 +181,7 @@ impl Engine {
             sys,
             cpu_totals: HashMap::new(),
             system_sampled_at: None,
+            server_pids: HashSet::new(),
         };
         let inner = Inner {
             entries,
@@ -418,6 +421,26 @@ impl Engine {
         Ok(info)
     }
 
+    /// SIGTERM a usage-list process that the latest scan offered to close.
+    pub fn terminate_app(&self, pid: u32, started_at_s: u64) -> Result<()> {
+        let close = Close::Terminate { pid, started_at_s };
+        if !self.lock().apps.iter().any(|app| app.close == Some(close)) {
+            bail!("that process is no longer listed; refresh and try again");
+        }
+        let fresh = process_system(pid);
+        let process = fresh
+            .process(Pid::from_u32(pid))
+            .ok_or_else(|| anyhow!("it has already exited"))?;
+        if process.start_time() != started_at_s {
+            bail!("process identity changed; refresh and try again");
+        }
+        // SAFETY: plain signal delivery to one verified PID.
+        if unsafe { libc::kill(pid as i32, libc::SIGTERM) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+
     pub fn clear(&self, target: &str) -> Result<()> {
         let mut inner = self.lock();
         let idx = find_managed(&inner, target)
@@ -654,8 +677,9 @@ impl Engine {
         let listeners = discovery::listeners();
         let connected_ports = discovery::established_local_ports();
 
-        let mut sampler = self.sampler.lock().unwrap_or_else(|e| e.into_inner());
-        let system_metrics = refresh_system_metrics(&mut sampler);
+        let mut guard = self.sampler.lock().unwrap_or_else(|e| e.into_inner());
+        let sampler = &mut *guard;
+        let system_metrics = refresh_system_metrics(sampler);
         sampler
             .sys
             .refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind());
@@ -678,7 +702,7 @@ impl Engine {
         sampler.cpu_totals = cpu_totals;
         let sys = &sampler.sys;
         let children = children_map(sys);
-        let apps = usage::top_apps(sys, &cpu_advanced);
+        let apps = usage::top_apps(sys, &cpu_advanced, &sampler.server_pids);
 
         let mut inner = self.lock();
         inner.system_metrics = system_metrics;
@@ -826,6 +850,7 @@ impl Engine {
             }
         }
         let mut unmanaged = Vec::new();
+        let mut server_pids = managed_pids;
         for (pid, mut ports) in by_pid {
             let Some(proc_) = sys.process(Pid::from_u32(pid)) else {
                 continue;
@@ -838,6 +863,7 @@ impl Engine {
             ports.dedup();
             let tree = descendants(&children, pid);
             let (cpu, rss) = tree_usage(sys, &tree, &cpu_advanced);
+            server_pids.extend(&tree);
             let cwd = proc_
                 .cwd()
                 .map(|p| p.to_string_lossy().into_owned())
@@ -894,6 +920,7 @@ impl Engine {
         }
         unmanaged.sort_by(|a, b| a.ports.cmp(&b.ports));
         inner.unmanaged = unmanaged;
+        sampler.server_pids = server_pids;
         let live_recognized: Vec<_> = inner
             .recognized_processes
             .iter()
@@ -1262,6 +1289,7 @@ mod identity_tests {
                 sys: System::new(),
                 cpu_totals: HashMap::new(),
                 system_sampled_at: None,
+                server_pids: HashSet::new(),
             }),
             cfg: Config {
                 stale_after: Duration::from_secs(3600),
@@ -1361,6 +1389,7 @@ mod identity_tests {
                 sys: System::new(),
                 cpu_totals: HashMap::new(),
                 system_sampled_at: None,
+                server_pids: HashSet::new(),
             }),
             cfg: Config {
                 stale_after: Duration::from_secs(3600),
